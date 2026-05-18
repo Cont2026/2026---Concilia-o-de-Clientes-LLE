@@ -189,6 +189,8 @@ if "resultado" not in st.session_state:
     st.session_state.resultado = None
 if "resumo" not in st.session_state:
     st.session_state.resumo = None
+if "observacoes" not in st.session_state:
+    st.session_state.observacoes = {}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -392,50 +394,48 @@ elif st.session_state.etapa == "processar":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Tabela de diferenças ───────────────────────────────────────────────────
+    # ── Tabela de diferenças com observações editáveis ────────────────────────
     st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — ordenados por |Diferença| decrescente</div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    def colorir_status(val):
-        if val == "Apenas no Contábil":
-            return "background-color: #FFE6E6; color: #C00000; font-weight: 600;"
-        elif val == "Apenas no Financeiro":
-            return "background-color: #FFE6E6; color: #C00000; font-weight: 600;"
-        else:
-            return "background-color: #FFF4CC; color: #041747; font-weight: 700;"
+    # Cabeçalho
+    h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.4, 1.2, 2.5, 0.8, 1.2, 0.8, 1.2, 1.4, 2.5])
+    h0.markdown("**#**")
+    h1.markdown("**CODPARC**")
+    h2.markdown("**Parceiro**")
+    h3.markdown("**Qtd C**")
+    h4.markdown("**Soma Contábil**")
+    h5.markdown("**Qtd F**")
+    h6.markdown("**Soma Financeiro**")
+    h7.markdown("**Diferença**")
+    h8.markdown("**📝 Observação do Analista**")
+    st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
 
-    def colorir_diferenca(val):
-        if val > 0:
-            return "color: #C00000; font-weight: 700;"
-        elif val < 0:
-            return "color: #0071FE; font-weight: 700;"
-        return ""
+    for i, (_, row) in enumerate(df_divergentes.iterrows(), start=1):
+        codparc = int(row["CODPARC"])
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.4, 1.2, 2.5, 0.8, 1.2, 0.8, 1.2, 1.4, 2.5])
+        c0.write(str(i))
+        c1.write(str(codparc))
+        c2.write(row["NOMEPARC"])
+        c3.write(str(int(row["QTD_CLI"])))
+        c4.write(f"R$ {row['SOMA_CLI']:,.2f}")
+        c5.write(str(int(row["QTD_FIN"])))
+        c6.write(f"R$ {row['SOMA_FIN']:,.2f}")
 
-    df_exibir = df_divergentes[
-        ["CODPARC", "NOMEPARC", "QTD_CLI", "SOMA_CLI", "QTD_FIN", "SOMA_FIN", "STATUS", "DIFERENCA"]
-    ].rename(columns={
-        "CODPARC": "CODPARC",
-        "NOMEPARC": "Parceiro",
-        "QTD_CLI": "Qtd NFs Cont.",
-        "SOMA_CLI": "Soma Contábil",
-        "QTD_FIN": "Qtd NFs Fin.",
-        "SOMA_FIN": "Soma Financeiro",
-        "STATUS": "Status",
-        "DIFERENCA": "Diferença",
-    })
+        dif = row["DIFERENCA"]
+        cor = "#C00000" if dif > 0 else "#0071FE"
+        c7.markdown(f"<span style='color:{cor};font-weight:700'>R$ {dif:,.2f}</span>", unsafe_allow_html=True)
 
-    styled = (
-        df_exibir.style
-        .map(colorir_status, subset=["Status"])
-        .map(colorir_diferenca, subset=["Diferença"])
-        .format({
-            "Soma Contábil": "R$ {:,.2f}",
-            "Soma Financeiro": "R$ {:,.2f}",
-            "Diferença": "R$ {:,.2f}",
-        })
-        .set_properties(**{"font-family": "Calibri, sans-serif", "font-size": "12px"})
-    )
-
-    st.dataframe(styled, use_container_width=True, height=350)
+        obs_atual = st.session_state.observacoes.get(codparc, "")
+        nova_obs = c8.text_input(
+            label="obs",
+            value=obs_atual,
+            key=f"obs_{codparc}",
+            label_visibility="collapsed",
+            placeholder="Digite a observação...",
+        )
+        if nova_obs != obs_atual:
+            st.session_state.observacoes[codparc] = nova_obs
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -546,6 +546,7 @@ elif st.session_state.etapa == "processar":
                 res,
                 st.session_state.orfaos_cli,
                 st.session_state.orfaos_fin,
+                st.session_state.observacoes,
             )
         st.download_button(
             label="⬇️ Baixar resultado em Excel",
@@ -558,6 +559,6 @@ elif st.session_state.etapa == "processar":
     with col_reiniciar:
         if st.button("🔄 Nova conciliação", use_container_width=True):
             for key in ["etapa", "df_cli_ok", "df_fin_ok", "orfaos_cli", "orfaos_fin",
-                        "df_fin_filtrado", "df_cli_raw", "resultado", "resumo"]:
+                        "df_fin_filtrado", "df_cli_raw", "resultado", "resumo", "observacoes"]:
                 st.session_state.pop(key, None)
             st.rerun()
