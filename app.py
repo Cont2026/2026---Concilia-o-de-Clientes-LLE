@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
 from conciliacao import (
     ler_contabil,
     ler_financeiro,
@@ -10,6 +12,86 @@ from conciliacao import (
     drill_down,
     gerar_excel,
 )
+
+# ── Persistência completa (bases + resultado + observações) ─────────────────
+ESTADO_FILE  = "estado_lle.pkl"
+OBS_FILE     = "observacoes_lle.json"
+
+@st.cache_resource
+def _get_store():
+    """Cache compartilhado em memória entre todas as sessões ativas."""
+    return {"estado": None, "obs": {}}
+
+# ── Observações ───────────────────────────────────────────────────────────────
+def carregar_observacoes() -> dict:
+    store = _get_store()
+    if store["obs"]:
+        return dict(store["obs"])
+    if os.path.exists(OBS_FILE):
+        try:
+            with open(OBS_FILE, "r", encoding="utf-8") as f:
+                store["obs"] = json.load(f)
+        except Exception:
+            store["obs"] = {}
+    return dict(store["obs"])
+
+def salvar_observacoes(obs: dict):
+    store = _get_store()
+    store["obs"] = dict(obs)
+    try:
+        with open(OBS_FILE, "w", encoding="utf-8") as f:
+            json.dump(obs, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+# ── Estado completo (bases + resultado + resumo + orfaos) ────────────────────
+def salvar_estado(df_cli_ok, df_fin_ok, df_fin_filtrado, orfaos_cli, orfaos_fin, resultado, resumo):
+    import pickle
+    store = _get_store()
+    estado = {
+        "df_cli_ok": df_cli_ok,
+        "df_fin_ok": df_fin_ok,
+        "df_fin_filtrado": df_fin_filtrado,
+        "orfaos_cli": orfaos_cli,
+        "orfaos_fin": orfaos_fin,
+        "resultado": resultado,
+        "resumo": resumo,
+    }
+    store["estado"] = estado
+    try:
+        with open(ESTADO_FILE, "wb") as f:
+            pickle.dump(estado, f)
+    except Exception:
+        pass
+
+def carregar_estado() -> dict:
+    import pickle
+    store = _get_store()
+    if store["estado"] is not None:
+        return dict(store["estado"])
+    if os.path.exists(ESTADO_FILE):
+        try:
+            with open(ESTADO_FILE, "rb") as f:
+                estado = pickle.load(f)
+                store["estado"] = estado
+                return dict(estado)
+        except Exception:
+            pass
+    return {}
+
+def limpar_estado():
+    store = _get_store()
+    store["estado"] = None
+    store["obs"] = {}
+    for f in [ESTADO_FILE, OBS_FILE]:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
+
+def limpar_observacoes():
+    limpar_estado()
 
 # ── Configuração da página ────────────────────────────────────────────────────
 st.set_page_config(
@@ -172,25 +254,29 @@ st.markdown("""
 
 # ── Estado da sessão ──────────────────────────────────────────────────────────
 if "etapa" not in st.session_state:
-    st.session_state.etapa = "upload"
-if "df_cli_ok" not in st.session_state:
-    st.session_state.df_cli_ok = None
-if "df_fin_ok" not in st.session_state:
-    st.session_state.df_fin_ok = None
-if "orfaos_cli" not in st.session_state:
-    st.session_state.orfaos_cli = None
-if "orfaos_fin" not in st.session_state:
-    st.session_state.orfaos_fin = None
-if "df_fin_filtrado" not in st.session_state:
-    st.session_state.df_fin_filtrado = None
-if "df_cli_raw" not in st.session_state:
-    st.session_state.df_cli_raw = None
-if "resultado" not in st.session_state:
-    st.session_state.resultado = None
-if "resumo" not in st.session_state:
-    st.session_state.resumo = None
+    # Tentar restaurar estado salvo
+    _estado = carregar_estado()
+    if _estado:
+        st.session_state.etapa = "processar"
+        st.session_state.df_cli_ok       = _estado.get("df_cli_ok")
+        st.session_state.df_fin_ok       = _estado.get("df_fin_ok")
+        st.session_state.df_fin_filtrado = _estado.get("df_fin_filtrado")
+        st.session_state.orfaos_cli      = _estado.get("orfaos_cli")
+        st.session_state.orfaos_fin      = _estado.get("orfaos_fin")
+        st.session_state.resultado       = _estado.get("resultado")
+        st.session_state.resumo          = _estado.get("resumo")
+    else:
+        st.session_state.etapa           = "upload"
+        st.session_state.df_cli_ok       = None
+        st.session_state.df_fin_ok       = None
+        st.session_state.df_fin_filtrado = None
+        st.session_state.orfaos_cli      = None
+        st.session_state.orfaos_fin      = None
+        st.session_state.resultado       = None
+        st.session_state.resumo          = None
+        st.session_state.df_cli_raw      = None
 if "observacoes" not in st.session_state:
-    st.session_state.observacoes = {}
+    st.session_state.observacoes = carregar_observacoes()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +453,15 @@ elif st.session_state.etapa == "processar":
 
             st.session_state.resultado = df_divergentes
             st.session_state.resumo = res
+            salvar_estado(
+                st.session_state.df_cli_ok,
+                st.session_state.df_fin_ok,
+                st.session_state.df_fin_filtrado,
+                st.session_state.orfaos_cli,
+                st.session_state.orfaos_fin,
+                df_divergentes,
+                res,
+            )
 
     df_divergentes = st.session_state.resultado
     res = st.session_state.resumo
@@ -445,6 +540,7 @@ elif st.session_state.etapa == "processar":
         )
         if nova_obs != obs_atual:
             st.session_state.observacoes[codparc] = nova_obs
+            salvar_observacoes(st.session_state.observacoes)
 
     st.markdown("<div style='border-bottom:2px solid #041747;margin-bottom:16px'></div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
@@ -568,6 +664,7 @@ elif st.session_state.etapa == "processar":
 
     with col_reiniciar:
         if st.button("🔄 Nova conciliação", use_container_width=True):
+            limpar_observacoes()
             for key in ["etapa", "df_cli_ok", "df_fin_ok", "orfaos_cli", "orfaos_fin",
                         "df_fin_filtrado", "df_cli_raw", "resultado", "resumo", "observacoes"]:
                 st.session_state.pop(key, None)
