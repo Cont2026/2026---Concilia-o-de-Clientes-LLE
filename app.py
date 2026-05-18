@@ -402,9 +402,9 @@ elif st.session_state.etapa == "processar":
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Cabeçalho via colunas Streamlit
-    cab = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1.4, 1, 2])
+    cab = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 1.4, 2])
     labels_cab = ["#", "CODPARC", "Parceiro", "Qtd NFs Cont.", "Qtd NFs Fin.",
-                  "Soma Contábil", "Soma Financeiro", "Status", "Diferença", "📝 Observação do Analista"]
+                  "Soma Contábil", "Soma Financeiro", "Diferença", "Status", "📝 Observação do Analista"]
     for col, lbl in zip(cab, labels_cab):
         col.markdown(f"<div style='background:#041747;color:#FAC318;font-weight:700;font-size:11px;padding:6px 4px;text-align:center'>{lbl}</div>", unsafe_allow_html=True)
 
@@ -422,7 +422,7 @@ elif st.session_state.etapa == "processar":
         bg = "#FFFFFF" if i % 2 == 1 else "#F5F7FA"
         borda = "border-bottom:1px solid #D9D9D9;"
 
-        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1.4, 1, 2])
+        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 1.4, 2])
 
         cel = f"background:{bg};{borda}padding:6px 4px;font-size:12px;"
         c0.markdown(f"<div style='{cel}text-align:center;color:#595959'>{i}</div>", unsafe_allow_html=True)
@@ -432,8 +432,8 @@ elif st.session_state.etapa == "processar":
         c4.markdown(f"<div style='{cel}text-align:center'>{int(row['QTD_FIN'])}</div>", unsafe_allow_html=True)
         c5.markdown(f"<div style='{cel}text-align:right'>{fmt_brl(row['SOMA_CLI'])}</div>", unsafe_allow_html=True)
         c6.markdown(f"<div style='{cel}text-align:right'>{fmt_brl(row['SOMA_FIN'])}</div>", unsafe_allow_html=True)
-        c7.markdown(f"<div style='background:{bg_st};{borda}padding:6px 4px;font-size:11px;text-align:center;color:{cor_st};font-weight:700'>{status}</div>", unsafe_allow_html=True)
-        c8.markdown(f"<div style='{cel}text-align:right;color:{cor_dif};font-weight:700'>{fmt_brl(dif)}</div>", unsafe_allow_html=True)
+        c7.markdown(f"<div style='{cel}text-align:right;color:{cor_dif};font-weight:700'>{fmt_brl(dif)}</div>", unsafe_allow_html=True)
+        c8.markdown(f"<div style='background:{bg_st};{borda}padding:6px 4px;font-size:11px;text-align:center;color:{cor_st};font-weight:700'>{status}</div>", unsafe_allow_html=True)
 
         obs_atual = st.session_state.observacoes.get(codparc, "")
         nova_obs = c9.text_input(
