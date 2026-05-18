@@ -425,8 +425,8 @@ elif st.session_state.etapa == "processar":
 
     styled = (
         df_exibir.style
-        .applymap(colorir_status, subset=["Status"])
-        .applymap(colorir_diferenca, subset=["Diferença"])
+        .map(colorir_status, subset=["Status"])
+        .map(colorir_diferenca, subset=["Diferença"])
         .format({
             "Soma Contábil": "R$ {:,.2f}",
             "Soma Financeiro": "R$ {:,.2f}",
@@ -491,7 +491,7 @@ elif st.session_state.etapa == "processar":
         styled_nf = (
             resumo_nf[["NF", "Σ_Contábil", "Σ_Financeiro", "Δ", "Status"]]
             .style
-            .applymap(colorir_status_nf, subset=["Status"])
+            .map(colorir_status_nf, subset=["Status"])
             .format({
                 "Σ_Contábil": "R$ {:,.2f}",
                 "Σ_Financeiro": "R$ {:,.2f}",
