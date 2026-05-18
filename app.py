@@ -377,6 +377,9 @@ elif st.session_state.etapa == "processar":
 
     c1, c2, c3, c4, c5 = st.columns(5)
 
+    def fmt_brl(valor):
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
     def card(col, label, value, classe=""):
         col.markdown(f"""
         <div class="metric-card">
@@ -385,9 +388,9 @@ elif st.session_state.etapa == "processar":
         </div>
         """, unsafe_allow_html=True)
 
-    card(c1, "Total Contábil", f"R$ {res['total_contabil']:,.2f}")
-    card(c2, "Total Financeiro", f"R$ {res['total_financeiro']:,.2f}")
-    card(c3, "Diferença Macro", f"R$ {res['diferenca_macro']:,.2f}")
+    card(c1, "Total Contábil", fmt_brl(res['total_contabil']))
+    card(c2, "Total Financeiro", fmt_brl(res['total_financeiro']))
+    card(c3, "Diferença Macro", fmt_brl(res['diferenca_macro']))
     card(c4, "Parceiros com diferença", str(res["qtd_parceiros"]))
     status_classe = "ok" if "OK" in res["status"] else "divergencia"
     card(c5, "Validação", res["status"], status_classe)
@@ -398,36 +401,55 @@ elif st.session_state.etapa == "processar":
     st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — ordenados por |Diferença| decrescente</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Cabeçalho
-    h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.4, 1.2, 2.5, 0.8, 0.8, 1.2, 1.2, 1.4, 2.5])
-    h0.markdown("**#**")
-    h1.markdown("**CODPARC**")
-    h2.markdown("**Parceiro**")
-    h3.markdown("**Qtd NFs Cont.**")
-    h4.markdown("**Qtd NFs Fin.**")
-    h5.markdown("**Soma Contábil**")
-    h6.markdown("**Soma Financeiro**")
-    h7.markdown("**Diferença**")
-    h8.markdown("**📝 Observação do Analista**")
-    st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
+    # Cabeçalho fixo com estilo LLE
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:0.3fr 0.9fr 2fr 0.6fr 0.6fr 1fr 1fr 1fr 2fr;
+                background:#041747;color:#FAC318;font-weight:700;font-size:12px;
+                padding:8px 12px;border-radius:4px 4px 0 0;gap:8px;">
+        <div>#</div><div>CODPARC</div><div>Parceiro</div>
+        <div style="text-align:center">Qtd NFs Cont.</div>
+        <div style="text-align:center">Qtd NFs Fin.</div>
+        <div style="text-align:right">Soma Contábil</div>
+        <div style="text-align:right">Soma Financeiro</div>
+        <div style="text-align:right">Diferença</div>
+        <div>📝 Observação do Analista</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     for i, (_, row) in enumerate(df_divergentes.iterrows(), start=1):
         codparc = int(row["CODPARC"])
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.4, 1.2, 2.5, 0.8, 0.8, 1.2, 1.2, 1.4, 2.5])
-        c0.write(str(i))
-        c1.write(str(codparc))
-        c2.write(row["NOMEPARC"])
-        c3.write(str(int(row["QTD_CLI"])))
-        c4.write(str(int(row["QTD_FIN"])))
-        c5.write(f"R$ {row['SOMA_CLI']:,.2f}")
-        c6.write(f"R$ {row['SOMA_FIN']:,.2f}")
-
         dif = row["DIFERENCA"]
-        cor = "#C00000" if dif > 0 else "#0071FE"
-        c7.markdown(f"<span style='color:{cor};font-weight:700'>R$ {dif:,.2f}</span>", unsafe_allow_html=True)
+        cor_dif = "#C00000" if dif > 0 else "#0071FE"
+        status = row["STATUS"]
+        if "Contábil" in status:
+            cor_status = "background:#FFE6E6;color:#C00000;"
+        elif "Financeiro" in status:
+            cor_status = "background:#FFE6E6;color:#C00000;"
+        else:
+            cor_status = "background:#FFF4CC;color:#041747;"
 
+        bg_linha = "#FFFFFF" if i % 2 == 1 else "#F5F7FA"
+
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:0.3fr 0.9fr 2fr 0.6fr 0.6fr 1fr 1fr 1fr 2fr;
+                    background:{bg_linha};font-size:12px;padding:6px 12px;
+                    border-bottom:1px solid #D9D9D9;gap:8px;align-items:center;">
+            <div style="color:#595959">{i}</div>
+            <div>{codparc}</div>
+            <div style="font-weight:600">{row["NOMEPARC"]}</div>
+            <div style="text-align:center">{int(row["QTD_CLI"])}</div>
+            <div style="text-align:center">{int(row["QTD_FIN"])}</div>
+            <div style="text-align:right">{fmt_brl(row["SOMA_CLI"])}</div>
+            <div style="text-align:right">{fmt_brl(row["SOMA_FIN"])}</div>
+            <div style="text-align:right;color:{cor_dif};font-weight:700">{fmt_brl(dif)}</div>
+            <div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Campo de observação sobreposto na última coluna via columns
+        _, _, _, _, _, _, _, _, col_obs = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1, 1, 1, 2])
         obs_atual = st.session_state.observacoes.get(codparc, "")
-        nova_obs = c8.text_input(
+        nova_obs = col_obs.text_input(
             label="obs",
             value=obs_atual,
             key=f"obs_{codparc}",
@@ -437,6 +459,7 @@ elif st.session_state.etapa == "processar":
         if nova_obs != obs_atual:
             st.session_state.observacoes[codparc] = nova_obs
 
+    st.markdown("<div style='border-bottom:2px solid #041747;margin-bottom:16px'></div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Drill-down interativo ──────────────────────────────────────────────────
@@ -468,9 +491,9 @@ elif st.session_state.etapa == "processar":
         # Mini resumo do parceiro
         row_parceiro = df_divergentes[df_divergentes["CODPARC"] == codparc_selecionado].iloc[0]
         col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Soma Contábil", f"R$ {row_parceiro['SOMA_CLI']:,.2f}")
-        col_b.metric("Soma Financeiro", f"R$ {row_parceiro['SOMA_FIN']:,.2f}")
-        col_c.metric("Diferença", f"R$ {row_parceiro['DIFERENCA']:,.2f}")
+        col_a.metric("Soma Contábil", fmt_brl(row_parceiro['SOMA_CLI']))
+        col_b.metric("Soma Financeiro", fmt_brl(row_parceiro['SOMA_FIN']))
+        col_c.metric("Diferença", fmt_brl(row_parceiro['DIFERENCA']))
         col_d.metric("Status", row_parceiro["STATUS"])
 
         st.markdown("<br>", unsafe_allow_html=True)
