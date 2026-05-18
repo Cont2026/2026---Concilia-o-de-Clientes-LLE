@@ -340,54 +340,9 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> 
         lado = Side(style="thin", color=BORDA_COR)
         cell.border = Border(left=lado, right=lado, top=lado, bottom=lado)
 
-    # ── Aba 1: Data base filtrado ──────────────────────────────────────────────
-    ws1 = wb.active
-    ws1.title = "Data base filtrado"
-
-    colunas_fin = ["CODEMP", "NUMNOTA", "CODPARC", "NOMEPARC", "VLRDESDOB",
-                   "DTEMISSAO", "DESCROPER", "TIPTIT", "DESCRNAT"]
-    colunas_existentes = [c for c in colunas_fin if c in df_filtrado.columns]
-
-    # Bloco resumo
-    ws1["A1"] = "BASE FINANCEIRA FILTRADA — LLE"
-    ws1["A1"].font = Font(bold=True, color=BRANCO, size=13, name="Calibri")
-    ws1["A1"].fill = PatternFill("solid", fgColor=AZUL_ESCURO)
-    ws1.merge_cells("A1:I1")
-    ws1["A1"].alignment = Alignment(horizontal="center")
-
-    labels = ["Total de linhas:", "Total R$:", "Parceiros únicos:", "Filtros LLE aplicados:"]
-    valores = [
-        len(df_filtrado),
-        f"R$ {df_filtrado['VLRDESDOB'].sum():,.2f}",
-        df_filtrado["CODPARC"].nunique(),
-        "Natureza=Vendas NF | 11 DESCROPER | 19 TIPTIT | Cartões excluídos",
-    ]
-    for i, (lb, vl) in enumerate(zip(labels, valores), start=3):
-        ws1[f"A{i}"] = lb
-        ws1[f"A{i}"].font = Font(bold=True, name="Calibri")
-        ws1[f"B{i}"] = vl
-
-    # Cabeçalho na linha 10
-    for col_i, col_name in enumerate(colunas_existentes, start=1):
-        cell = ws1.cell(row=10, column=col_i, value=col_name)
-        header_style(cell)
-        borda_fina(cell)
-
-    # Dados a partir de linha 11
-    for row_i, (_, row_data) in enumerate(df_filtrado[colunas_existentes].iterrows(), start=11):
-        for col_i, val in enumerate(row_data, start=1):
-            cell = ws1.cell(row=row_i, column=col_i, value=val)
-            cell.font = Font(name="Calibri", size=10)
-            if (row_i - 11) % 2 == 0:
-                cell.fill = PatternFill("solid", fgColor=BRANCO)
-            else:
-                cell.fill = PatternFill("solid", fgColor=CINZA)
-            borda_fina(cell)
-
-    ws1.freeze_panes = "A11"
-
-    # ── Aba 2: Investigação Diferença ─────────────────────────────────────────
-    ws2 = wb.create_sheet("Investigação Diferença")
+    # ── Aba única: Investigação Diferença ────────────────────────────────────
+    ws2 = wb.active
+    ws2.title = "Investigação Diferença"
 
     ws2["A1"] = "INVESTIGAÇÃO DIFERENÇA — Comparação Consolidada por Parceiro (CODPARC)"
     ws2["A1"].font = Font(bold=True, color=BRANCO, size=14, name="Calibri")
