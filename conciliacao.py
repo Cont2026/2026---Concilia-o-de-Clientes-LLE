@@ -365,8 +365,7 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
             ws2[f"B{i}"].font = Font(bold=True, color=cor, name="Calibri")
 
     # Cabeçalho tabela
-    cabecalhos = ["CODPARC", "NOMEPARC", "Qtd NFs Contábil", "Soma Contábil (R$)",
-                  "Qtd NFs Financeiro", "Soma Financeiro (R$)", "Status", "Diferença (R$)", "Observação do Analista"]
+    cabecalhos = ["CODPARC", "NOMEPARC", "Qtd NFs Contábil", "Qtd NFs Financeiro", "Soma Contábil (R$)", "Soma Financeiro (R$)", "Status", "Diferença (R$)", "Observação do Analista"]
     for col_i, nome in enumerate(cabecalhos, start=1):
         cell = ws2.cell(row=10, column=col_i, value=nome)
         header_style(cell)
@@ -377,8 +376,8 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
         obs = (observacoes or {}).get(int(row_data["CODPARC"]), "")
         vals = [
             row_data["CODPARC"], row_data["NOMEPARC"],
-            row_data["QTD_CLI"], row_data["SOMA_CLI"],
-            row_data["QTD_FIN"], row_data["SOMA_FIN"],
+            row_data["QTD_CLI"], row_data["QTD_FIN"],
+            row_data["SOMA_CLI"], row_data["SOMA_FIN"],
             row_data["STATUS"], row_data["DIFERENCA"], obs,
         ]
         for col_i, val in enumerate(vals, start=1):
@@ -387,7 +386,7 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
             fill_cor = BRANCO if (row_i - 11) % 2 == 0 else CINZA
             cell.fill = PatternFill("solid", fgColor=fill_cor)
             borda_fina(cell)
-            if col_i in (4, 6, 8):  # Soma Contábil, Soma Financeiro, Diferença
+            if col_i in (5, 6, 8):  # Soma Contábil, Soma Financeiro, Diferença
                 cell.number_format = '#,##0.00'
 
         # Cor da coluna observação
