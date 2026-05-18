@@ -399,13 +399,13 @@ elif st.session_state.etapa == "processar":
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Cabeçalho
-    h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.4, 1.2, 2.5, 0.8, 1.2, 0.8, 1.2, 1.4, 2.5])
+    h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.4, 1.2, 2.5, 0.8, 0.8, 1.2, 1.2, 1.4, 2.5])
     h0.markdown("**#**")
     h1.markdown("**CODPARC**")
     h2.markdown("**Parceiro**")
-    h3.markdown("**Qtd C**")
-    h4.markdown("**Soma Contábil**")
-    h5.markdown("**Qtd F**")
+    h3.markdown("**Qtd NFs Cont.**")
+    h4.markdown("**Qtd NFs Fin.**")
+    h5.markdown("**Soma Contábil**")
     h6.markdown("**Soma Financeiro**")
     h7.markdown("**Diferença**")
     h8.markdown("**📝 Observação do Analista**")
@@ -413,13 +413,13 @@ elif st.session_state.etapa == "processar":
 
     for i, (_, row) in enumerate(df_divergentes.iterrows(), start=1):
         codparc = int(row["CODPARC"])
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.4, 1.2, 2.5, 0.8, 1.2, 0.8, 1.2, 1.4, 2.5])
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.4, 1.2, 2.5, 0.8, 0.8, 1.2, 1.2, 1.4, 2.5])
         c0.write(str(i))
         c1.write(str(codparc))
         c2.write(row["NOMEPARC"])
         c3.write(str(int(row["QTD_CLI"])))
-        c4.write(f"R$ {row['SOMA_CLI']:,.2f}")
-        c5.write(str(int(row["QTD_FIN"])))
+        c4.write(str(int(row["QTD_FIN"])))
+        c5.write(f"R$ {row['SOMA_CLI']:,.2f}")
         c6.write(f"R$ {row['SOMA_FIN']:,.2f}")
 
         dif = row["DIFERENCA"]
