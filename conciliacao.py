@@ -314,7 +314,7 @@ def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
 
 # ── Export Excel ──────────────────────────────────────────────────────────────
 
-def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> bytes:
+def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, observacoes=None) -> bytes:
     """Gera Excel com duas abas: Data base filtrado e Investigação Diferença."""
     import io
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -366,7 +366,7 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> 
 
     # Cabeçalho tabela
     cabecalhos = ["CODPARC", "NOMEPARC", "Qtd NFs Contábil", "Soma Contábil (R$)",
-                  "Qtd NFs Financeiro", "Soma Financeiro (R$)", "Status", "Diferença (R$)"]
+                  "Qtd NFs Financeiro", "Soma Financeiro (R$)", "Status", "Diferença (R$)", "Observação do Analista"]
     for col_i, nome in enumerate(cabecalhos, start=1):
         cell = ws2.cell(row=10, column=col_i, value=nome)
         header_style(cell)
@@ -374,11 +374,12 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> 
 
     # Dados
     for row_i, (_, row_data) in enumerate(df_divergentes.iterrows(), start=11):
+        obs = (observacoes or {}).get(int(row_data["CODPARC"]), "")
         vals = [
             row_data["CODPARC"], row_data["NOMEPARC"],
             row_data["QTD_CLI"], row_data["SOMA_CLI"],
             row_data["QTD_FIN"], row_data["SOMA_FIN"],
-            row_data["STATUS"], row_data["DIFERENCA"],
+            row_data["STATUS"], row_data["DIFERENCA"], obs,
         ]
         for col_i, val in enumerate(vals, start=1):
             cell = ws2.cell(row=row_i, column=col_i, value=val)
@@ -386,8 +387,14 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> 
             fill_cor = BRANCO if (row_i - 11) % 2 == 0 else CINZA
             cell.fill = PatternFill("solid", fgColor=fill_cor)
             borda_fina(cell)
-            if col_i in (4, 6, 8):
+            if col_i in (4, 6, 8):  # Soma Contábil, Soma Financeiro, Diferença
                 cell.number_format = '#,##0.00'
+
+        # Cor da coluna observação
+        obs_cell = ws2.cell(row=row_i, column=9)
+        if obs_cell.value:
+            obs_cell.fill = PatternFill("solid", fgColor="EAF4FF")
+            obs_cell.font = Font(color="041747", name="Calibri", size=10)
 
         # Cor da coluna status
         status_cell = ws2.cell(row=row_i, column=7)
