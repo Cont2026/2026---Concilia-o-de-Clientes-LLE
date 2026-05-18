@@ -401,55 +401,34 @@ elif st.session_state.etapa == "processar":
     st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — ordenados por |Diferença| decrescente</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Cabeçalho fixo com estilo LLE
-    st.markdown("""
-    <div style="display:grid;grid-template-columns:0.3fr 0.9fr 2fr 0.6fr 0.6fr 1fr 1fr 1fr 2fr;
-                background:#041747;color:#FAC318;font-weight:700;font-size:12px;
-                padding:8px 12px;border-radius:4px 4px 0 0;gap:8px;">
-        <div>#</div><div>CODPARC</div><div>Parceiro</div>
-        <div style="text-align:center">Qtd NFs Cont.</div>
-        <div style="text-align:center">Qtd NFs Fin.</div>
-        <div style="text-align:right">Soma Contábil</div>
-        <div style="text-align:right">Soma Financeiro</div>
-        <div style="text-align:right">Diferença</div>
-        <div>📝 Observação do Analista</div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Cabeçalho via colunas Streamlit
+    cab = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 2])
+    labels_cab = ["#", "CODPARC", "Parceiro", "Qtd NFs Cont.", "Qtd NFs Fin.",
+                  "Soma Contábil", "Soma Financeiro", "Diferença", "📝 Observação do Analista"]
+    for col, lbl in zip(cab, labels_cab):
+        col.markdown(f"<div style='background:#041747;color:#FAC318;font-weight:700;font-size:11px;padding:6px 4px;text-align:center'>{lbl}</div>", unsafe_allow_html=True)
 
     for i, (_, row) in enumerate(df_divergentes.iterrows(), start=1):
         codparc = int(row["CODPARC"])
         dif = row["DIFERENCA"]
         cor_dif = "#C00000" if dif > 0 else "#0071FE"
-        status = row["STATUS"]
-        if "Contábil" in status:
-            cor_status = "background:#FFE6E6;color:#C00000;"
-        elif "Financeiro" in status:
-            cor_status = "background:#FFE6E6;color:#C00000;"
-        else:
-            cor_status = "background:#FFF4CC;color:#041747;"
+        bg = "#FFFFFF" if i % 2 == 1 else "#F5F7FA"
+        borda = "border-bottom:1px solid #D9D9D9;"
 
-        bg_linha = "#FFFFFF" if i % 2 == 1 else "#F5F7FA"
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 2])
 
-        st.markdown(f"""
-        <div style="display:grid;grid-template-columns:0.3fr 0.9fr 2fr 0.6fr 0.6fr 1fr 1fr 1fr 2fr;
-                    background:{bg_linha};font-size:12px;padding:6px 12px;
-                    border-bottom:1px solid #D9D9D9;gap:8px;align-items:center;">
-            <div style="color:#595959">{i}</div>
-            <div>{codparc}</div>
-            <div style="font-weight:600">{row["NOMEPARC"]}</div>
-            <div style="text-align:center">{int(row["QTD_CLI"])}</div>
-            <div style="text-align:center">{int(row["QTD_FIN"])}</div>
-            <div style="text-align:right">{fmt_brl(row["SOMA_CLI"])}</div>
-            <div style="text-align:right">{fmt_brl(row["SOMA_FIN"])}</div>
-            <div style="text-align:right;color:{cor_dif};font-weight:700">{fmt_brl(dif)}</div>
-            <div></div>
-        </div>
-        """, unsafe_allow_html=True)
+        cel = f"background:{bg};{borda}padding:6px 4px;font-size:12px;"
+        c0.markdown(f"<div style='{cel}text-align:center;color:#595959'>{i}</div>", unsafe_allow_html=True)
+        c1.markdown(f"<div style='{cel}text-align:center'>{codparc}</div>", unsafe_allow_html=True)
+        c2.markdown(f"<div style='{cel}font-weight:600'>{row['NOMEPARC']}</div>", unsafe_allow_html=True)
+        c3.markdown(f"<div style='{cel}text-align:center'>{int(row['QTD_CLI'])}</div>", unsafe_allow_html=True)
+        c4.markdown(f"<div style='{cel}text-align:center'>{int(row['QTD_FIN'])}</div>", unsafe_allow_html=True)
+        c5.markdown(f"<div style='{cel}text-align:right'>{fmt_brl(row['SOMA_CLI'])}</div>", unsafe_allow_html=True)
+        c6.markdown(f"<div style='{cel}text-align:right'>{fmt_brl(row['SOMA_FIN'])}</div>", unsafe_allow_html=True)
+        c7.markdown(f"<div style='{cel}text-align:right;color:{cor_dif};font-weight:700'>{fmt_brl(dif)}</div>", unsafe_allow_html=True)
 
-        # Campo de observação sobreposto na última coluna via columns
-        _, _, _, _, _, _, _, _, col_obs = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1, 1, 1, 2])
         obs_atual = st.session_state.observacoes.get(codparc, "")
-        nova_obs = col_obs.text_input(
+        nova_obs = c8.text_input(
             label="obs",
             value=obs_atual,
             key=f"obs_{codparc}",
