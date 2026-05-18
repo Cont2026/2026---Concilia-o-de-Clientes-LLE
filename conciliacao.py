@@ -434,7 +434,7 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin) -> 
             linha_orf += 1
 
     # Ajuste de largura das colunas
-    for ws in [ws1, ws2]:
+    for ws in [ws2]:
         for col in ws.columns:
             max_len = 0
             col_letter = get_column_letter(col[0].column)
