@@ -67,8 +67,7 @@ def salvar_estado(df_cli_ok, df_fin_ok, df_fin_filtrado, orfaos_cli, orfaos_fin,
 def carregar_estado() -> dict:
     import pickle
     store = _get_store()
-    if store["estado"] is not None:
-        return dict(store["estado"])
+    # Sempre lê do arquivo para garantir dados frescos
     if os.path.exists(ESTADO_FILE):
         try:
             with open(ESTADO_FILE, "rb") as f:
@@ -92,6 +91,12 @@ def limpar_estado():
 
 def limpar_observacoes():
     limpar_estado()
+
+def resetar_cache_store():
+    """Força limpeza total do cache em memória — chamado antes de salvar novo estado."""
+    store = _get_store()
+    store["estado"] = None
+    store["obs"] = {}
 
 # ── Configuração da página ────────────────────────────────────────────────────
 st.set_page_config(
@@ -462,6 +467,7 @@ elif st.session_state.etapa == "processar":
 
             st.session_state.resultado = df_divergentes
             st.session_state.resumo = res
+            resetar_cache_store()
             salvar_estado(
                 st.session_state.df_cli_ok,
                 st.session_state.df_fin_ok,
