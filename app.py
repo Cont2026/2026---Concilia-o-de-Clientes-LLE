@@ -352,14 +352,23 @@ elif st.session_state.etapa == "orfaos":
     orfaos_fin = st.session_state.orfaos_fin
     df_cli_ok = st.session_state.df_cli_ok
 
-    # Mapa de nomes para sugestão de CODPARC
-    nomes_codparc = (
+    # Mapa de nomes para sugestão de CODPARC (normalizado para casar com caracteres especiais)
+    import re
+    def norm_nome(s):
+        if not s:
+            return ""
+        s = re.sub(r'[^a-zA-Z0-9À-ÿ ]', '', str(s))
+        return ' '.join(s.split()).upper()
+
+    _nomes_df = (
         df_cli_ok.groupby("NOMEPARC")["CODPARC"]
         .first()
         .reset_index()
-        .set_index("NOMEPARC")["CODPARC"]
-        .to_dict()
     )
+    nomes_codparc = {
+        norm_nome(row["NOMEPARC"]): row["CODPARC"]
+        for _, row in _nomes_df.iterrows()
+    }
 
     st.markdown("""
     <div style="background:#FFF4CC; border-left:4px solid #FAC318; padding:12px 16px; border-radius:4px; margin-bottom:16px;">
@@ -380,7 +389,7 @@ elif st.session_state.etapa == "orfaos":
             c3.write(f"R$ {row.get('VLRDESDOB', 0):,.2f}")
 
             # Sugestão automática pelo nome
-            sugestao = nomes_codparc.get(str(row.get("NOMEPARC", "")), "")
+            sugestao = nomes_codparc.get(norm_nome(str(row.get("NOMEPARC", ""))), "")
             cod = c4.text_input(
                 "CODPARC",
                 value=str(int(sugestao)) if sugestao else "",
