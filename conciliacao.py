@@ -252,11 +252,12 @@ def resumo_macro(df_cli, df_fin, df_dif, orfaos_cli, orfaos_fin):
 
 def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
     """Retorna NFs do parceiro nas duas bases."""
-    nfs_cli = df_cli[df_cli["CODPARC"] == codparc][
-        ["NUMNOTA", "VLRDESDOB", "DTEMISSAO", "HISTORICO"]
-    ].copy()
+    colunas_cli = ["CODEMP", "NUMNOTA", "VLRDESDOB", "DTEMISSAO", "HISTORICO"]
+    colunas_cli_exist = [c for c in colunas_cli if c in df_cli.columns]
+    nfs_cli = df_cli[df_cli["CODPARC"] == codparc][colunas_cli_exist].copy()
     nfs_cli = nfs_cli.rename(
         columns={
+            "CODEMP": "CODEMP",
             "NUMNOTA": "NF",
             "VLRDESDOB": "Valor (R$)",
             "DTEMISSAO": "Data",
@@ -264,11 +265,12 @@ def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
         }
     )
 
-    nfs_fin = df_fin[df_fin["CODPARC"] == codparc][
-        ["NUMNOTA", "VLRDESDOB", "DTEMISSAO", "DESCROPER"]
-    ].copy()
+    colunas_fin = ["CODEMP", "NUMNOTA", "VLRDESDOB", "DTEMISSAO", "DESCROPER"]
+    colunas_fin_exist = [c for c in colunas_fin if c in df_fin.columns]
+    nfs_fin = df_fin[df_fin["CODPARC"] == codparc][colunas_fin_exist].copy()
     nfs_fin = nfs_fin.rename(
         columns={
+            "CODEMP": "CODEMP",
             "NUMNOTA": "NF",
             "VLRDESDOB": "Valor (R$)",
             "DTEMISSAO": "Data",
@@ -276,19 +278,20 @@ def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
         }
     )
 
-    # Resumo por NF
+    # Resumo por NF — agrega CODEMP junto com NF
     grp_cli = (
-        nfs_cli.groupby("NF")
+        nfs_cli.groupby(["CODEMP", "NF"] if "CODEMP" in nfs_cli.columns else ["NF"])
         .agg(Σ_Contábil=("Valor (R$)", "sum"), Qtd_C=("Valor (R$)", "count"))
         .reset_index()
     )
     grp_fin = (
-        nfs_fin.groupby("NF")
+        nfs_fin.groupby(["CODEMP", "NF"] if "CODEMP" in nfs_fin.columns else ["NF"])
         .agg(Σ_Financeiro=("Valor (R$)", "sum"), Qtd_F=("Valor (R$)", "count"))
         .reset_index()
     )
 
-    resumo_nf = pd.merge(grp_cli, grp_fin, on="NF", how="outer").fillna(0)
+    merge_keys = ["CODEMP", "NF"] if "CODEMP" in grp_cli.columns else ["NF"]
+    resumo_nf = pd.merge(grp_cli, grp_fin, on=merge_keys, how="outer").fillna(0)
     resumo_nf["Σ_Contábil"] = resumo_nf["Σ_Contábil"].round(2)
     resumo_nf["Σ_Financeiro"] = resumo_nf["Σ_Financeiro"].round(2)
     resumo_nf["Δ"] = (resumo_nf["Σ_Contábil"] - resumo_nf["Σ_Financeiro"]).round(2)
