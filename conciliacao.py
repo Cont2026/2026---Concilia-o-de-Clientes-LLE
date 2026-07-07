@@ -62,6 +62,10 @@ CARTOES_EXCLUIDOS = [
 # CODPARC do parceiro SEPM — entra independente do TIPTIT
 CODPARC_SEPM = 41007
 
+# Valor mínimo (R$) para considerar uma compensação entre parceiros.
+# Serve para ignorar centavos de arredondamento (ex.: pares de 0,01).
+VALOR_MIN_COMPENSACAO = 1.00
+
 
 # ── Normalização ──────────────────────────────────────────────────────────────
 
@@ -226,6 +230,68 @@ def conciliar(df_cli: pd.DataFrame, df_fin: pd.DataFrame) -> pd.DataFrame:
     return divergentes
 
 
+# ── Compensações entre parceiros ──────────────────────────────────────────────
+
+def detectar_compensacoes(df_divergentes: pd.DataFrame, valor_minimo: float = VALOR_MIN_COMPENSACAO) -> pd.DataFrame:
+    """
+    Sinaliza POSSÍVEIS compensações entre parceiros: pares cujas diferenças
+    têm o mesmo valor em módulo e sinais opostos (+X em um, -X em outro).
+
+    IMPORTANTE: o vínculo é apenas o valor líquido — NÃO a nota fiscal.
+    Portanto isto é uma SUGESTÃO para conferência do analista, não uma prova.
+
+    - "Par exato": só existe um parceiro com +X e um com -X (par único).
+    - "Ambíguo — confirmar": há vários candidatos para o mesmo valor; devolve
+      todas as combinações possíveis, cabendo ao analista decidir.
+
+    Valores em módulo abaixo de `valor_minimo` são ignorados (arredondamento).
+    Retorna DataFrame (uma linha por combinação possível).
+    """
+    colunas = [
+        "VALOR", "CODPARC_A", "PARCEIRO_A", "DIF_A",
+        "CODPARC_B", "PARCEIRO_B", "DIF_B", "TIPO", "OBSERVACAO",
+    ]
+    if df_divergentes is None or len(df_divergentes) == 0:
+        return pd.DataFrame(columns=colunas)
+
+    df = df_divergentes.copy()
+    df["_ABS"] = df["DIFERENCA"].abs().round(2)
+
+    linhas = []
+    for valor in sorted(df["_ABS"].unique(), reverse=True):
+        if valor < valor_minimo:
+            continue
+        grupo = df[df["_ABS"] == valor]
+        pos = grupo[grupo["DIFERENCA"] > 0]   # sobra (Contábil > Financeiro)
+        neg = grupo[grupo["DIFERENCA"] < 0]   # falta (Contábil < Financeiro)
+        if len(pos) == 0 or len(neg) == 0:
+            continue
+
+        ambiguo = not (len(pos) == 1 and len(neg) == 1)
+        tipo = "Ambíguo — confirmar" if ambiguo else "Par exato"
+        obs = (
+            "Vários candidatos com o mesmo valor; confira qual par de fato se compensa."
+            if ambiguo else
+            "Diferenças exatamente opostas — provável troca de lançamento entre os dois."
+        )
+
+        for _, rn in neg.iterrows():
+            for _, rp in pos.iterrows():
+                linhas.append({
+                    "VALOR": round(float(valor), 2),
+                    "CODPARC_A": int(rn["CODPARC"]),
+                    "PARCEIRO_A": rn["NOMEPARC"],
+                    "DIF_A": round(float(rn["DIFERENCA"]), 2),
+                    "CODPARC_B": int(rp["CODPARC"]),
+                    "PARCEIRO_B": rp["NOMEPARC"],
+                    "DIF_B": round(float(rp["DIFERENCA"]), 2),
+                    "TIPO": tipo,
+                    "OBSERVACAO": obs,
+                })
+
+    return pd.DataFrame(linhas, columns=colunas)
+
+
 # ── Resumo macro ──────────────────────────────────────────────────────────────
 
 def resumo_macro(df_cli, df_fin, df_dif, orfaos_cli, orfaos_fin):
@@ -319,10 +385,11 @@ def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
 # ── Export Excel ──────────────────────────────────────────────────────────────
 
 def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, observacoes=None) -> bytes:
-    """Gera Excel com duas abas: Data base filtrado e Investigação Diferença."""
+    """Gera Excel com abas: Investigação Diferença e Compensações entre Parceiros."""
     import io
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.cell.cell import MergedCell
     from openpyxl import Workbook
 
     wb = Workbook()
@@ -344,7 +411,7 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
         lado = Side(style="thin", color=BORDA_COR)
         cell.border = Border(left=lado, right=lado, top=lado, bottom=lado)
 
-    # ── Aba única: Investigação Diferença ────────────────────────────────────
+    # ── Aba 1: Investigação Diferença ────────────────────────────────────────
     ws2 = wb.active
     ws2.title = "Investigação Diferença"
 
@@ -443,18 +510,83 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
             ws2.cell(row=linha_orf, column=5, value=row_data.get("DTEMISSAO", ""))
             linha_orf += 1
 
-    # Ajuste de largura das colunas
-    for ws in [ws2]:
-        for col in ws.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                try:
-                    if cell.value:
-                        max_len = max(max_len, len(str(cell.value)))
-                except:
-                    pass
-            ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+    # ── Aba 2: Compensações entre Parceiros ──────────────────────────────────
+    ws3 = wb.create_sheet("Compensações entre Parceiros")
+    df_comp = detectar_compensacoes(df_divergentes)
+
+    ws3["A1"] = "COMPENSAÇÕES ENTRE PARCEIROS — pares com diferença igual e oposta"
+    ws3["A1"].font = Font(bold=True, color=BRANCO, size=14, name="Calibri")
+    ws3["A1"].fill = PatternFill("solid", fgColor=AZUL_ESCURO)
+    ws3.merge_cells("A1:I1")
+    ws3["A1"].alignment = Alignment(horizontal="center")
+
+    ws3["A3"] = (
+        "Sugestão para conferência: o vínculo é apenas o VALOR líquido (não a nota fiscal). "
+        "Um parceiro com sobra (+) e outro com falta (−) do mesmo valor podem indicar "
+        "lançamento trocado entre eles. Confirme antes de considerar resolvido."
+    )
+    ws3["A3"].font = Font(italic=True, color="595959", name="Calibri", size=10)
+    ws3["A3"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws3.merge_cells("A3:I4")
+
+    cab_comp = [
+        "Valor Compensado (R$)",
+        "CODPARC (−)", "Parceiro com falta (−)", "Diferença (−)",
+        "CODPARC (+)", "Parceiro com sobra (+)", "Diferença (+)",
+        "Tipo", "Observação",
+    ]
+    for col_i, nome in enumerate(cab_comp, start=1):
+        cell = ws3.cell(row=6, column=col_i, value=nome)
+        header_style(cell)
+        borda_fina(cell)
+
+    if df_comp is None or len(df_comp) == 0:
+        cell = ws3.cell(
+            row=7, column=1,
+            value="Nenhuma compensação encontrada (nenhum par de diferenças opostas acima do valor mínimo).",
+        )
+        cell.font = Font(italic=True, color="595959", name="Calibri", size=10)
+        ws3.merge_cells("A7:I7")
+    else:
+        for row_i, (_, rc) in enumerate(df_comp.iterrows(), start=7):
+            vals = [
+                rc["VALOR"],
+                rc["CODPARC_A"], rc["PARCEIRO_A"], rc["DIF_A"],
+                rc["CODPARC_B"], rc["PARCEIRO_B"], rc["DIF_B"],
+                rc["TIPO"], rc["OBSERVACAO"],
+            ]
+            for col_i, val in enumerate(vals, start=1):
+                cell = ws3.cell(row=row_i, column=col_i, value=val)
+                cell.font = Font(name="Calibri", size=10)
+                fill_cor = BRANCO if (row_i - 7) % 2 == 0 else CINZA
+                cell.fill = PatternFill("solid", fgColor=fill_cor)
+                borda_fina(cell)
+                if col_i in (1, 4, 7):  # Valor, Diferença (−), Diferença (+)
+                    cell.number_format = '#,##0.00'
+
+            # Cor do tipo
+            tipo_cell = ws3.cell(row=row_i, column=8)
+            if "Ambíguo" in str(rc["TIPO"]):
+                tipo_cell.fill = PatternFill("solid", fgColor="FFF4CC")
+                tipo_cell.font = Font(bold=True, color=AZUL_ESCURO, name="Calibri", size=10)
+            else:
+                tipo_cell.fill = PatternFill("solid", fgColor="D9F2DC")
+                tipo_cell.font = Font(bold=True, color=VERDE, name="Calibri", size=10)
+
+    ws3.freeze_panes = "A7"
+
+    # Ajuste de largura das colunas (ambas as abas)
+    for ws in [ws2, ws3]:
+        larguras = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell, MergedCell):
+                    continue
+                if cell.value is not None:
+                    letra = cell.column_letter
+                    larguras[letra] = max(larguras.get(letra, 0), len(str(cell.value)))
+        for letra, largura in larguras.items():
+            ws.column_dimensions[letra].width = min(largura + 4, 50)
 
     buf = io.BytesIO()
     wb.save(buf)
