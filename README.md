@@ -13,7 +13,7 @@ Aplicativo Streamlit para conciliação mensal entre a base contábil (Clientes)
 ## Filtros LLE aplicados automaticamente
 
 - **Natureza:** Vendas notas fiscais
-- **Operações válidas (DESCROPER):** 11 operações canônicas LLE
+- **Operações válidas (DESCROPER):** 12 operações canônicas LLE
 - **Tipos de título válidos (TIPTIT):** 19 tipos incluindo históricos "antigo"
 - **Cartões excluídos:** GETNET TEF, CRED PARC, CREDITO A DISTANCIA, CREDITO A VISTA, DEBITO GETNET
 - **Exceção:** SEPM (CODPARC 41007) entra independente do TIPTIT
