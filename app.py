@@ -13,6 +13,32 @@ from conciliacao import (
     gerar_excel,
 )
 
+# ── Formatação BR de valores e inteiros ───────────────────────────────────────
+def fmt_brl(valor):
+    """Formata número no padrão brasileiro: R$ 1.234.567,89."""
+    try:
+        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return valor
+
+def fmt_int(valor):
+    """Formata NF/inteiro sem casas decimais e sem '.0'. Retorna '—' se vazio."""
+    try:
+        if pd.isna(valor):
+            return "—"
+        return f"{int(float(valor))}"
+    except (ValueError, TypeError):
+        return "—" if valor in (None, "") else str(valor)
+
+def fmt_nf(valor):
+    """Formata NF em tabelas (Styler): inteiro puro, vazio se nulo."""
+    try:
+        if pd.isna(valor):
+            return ""
+        return f"{int(float(valor))}"
+    except (ValueError, TypeError):
+        return "" if valor in (None, "") else str(valor)
+
 # ── Persistência completa (bases + resultado + observações) ─────────────────
 ESTADO_FILE  = "estado_lle.pkl"
 OBS_FILE     = "observacoes_lle.json"
@@ -390,8 +416,8 @@ elif st.session_state.etapa == "orfaos":
         for idx, row in orfaos_cli.iterrows():
             c1, c2, c3, c4 = st.columns([2, 2, 1, 2])
             c1.write(f"**{row.get('NOMEPARC', '—')}**")
-            c2.write(f"NF {row.get('NUMNOTA', '—')}")
-            c3.write(f"R$ {row.get('VLRDESDOB', 0):,.2f}")
+            c2.write(f"NF {fmt_int(row.get('NUMNOTA'))}")
+            c3.write(fmt_brl(row.get('VLRDESDOB', 0)))
 
             # Sugestão automática pelo nome
             sugestao = nomes_codparc.get(norm_nome(str(row.get("NOMEPARC", ""))), "")
@@ -413,8 +439,8 @@ elif st.session_state.etapa == "orfaos":
         for idx, row in orfaos_fin.iterrows():
             c1, c2, c3 = st.columns([3, 2, 1])
             c1.write(f"**{row.get('NOMEPARC', '—')}**")
-            c2.write(f"NF {row.get('NUMNOTA', '—')}")
-            c3.write(f"R$ {row.get('VLRDESDOB', 0):,.2f}")
+            c2.write(f"NF {fmt_int(row.get('NUMNOTA'))}")
+            c3.write(fmt_brl(row.get('VLRDESDOB', 0)))
 
     st.markdown("<br>", unsafe_allow_html=True)
     col_btn1, col_btn2 = st.columns(2)
@@ -486,9 +512,6 @@ elif st.session_state.etapa == "processar":
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-
-    def fmt_brl(valor):
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
     def card(col, label, value, classe=""):
         col.markdown(f"""
@@ -614,9 +637,10 @@ elif st.session_state.etapa == "processar":
             .style
             .map(colorir_status_nf, subset=["Status"])
             .format({
-                "Σ_Contábil": "R$ {:,.2f}",
-                "Σ_Financeiro": "R$ {:,.2f}",
-                "Δ": "R$ {:,.2f}",
+                "NF": fmt_nf,
+                "Σ_Contábil": fmt_brl,
+                "Σ_Financeiro": fmt_brl,
+                "Δ": fmt_brl,
             })
             .set_properties(**{"font-family": "Calibri, sans-serif", "font-size": "12px"})
         )
@@ -633,7 +657,7 @@ elif st.session_state.etapa == "processar":
             )
             if len(nfs_cli) > 0:
                 st.dataframe(
-                    nfs_cli.style.format({"Valor (R$)": "R$ {:,.2f}"}),
+                    nfs_cli.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}),
                     use_container_width=True,
                     height=250,
                 )
@@ -647,7 +671,7 @@ elif st.session_state.etapa == "processar":
             )
             if len(nfs_fin) > 0:
                 st.dataframe(
-                    nfs_fin.style.format({"Valor (R$)": "R$ {:,.2f}"}),
+                    nfs_fin.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}),
                     use_container_width=True,
                     height=250,
                 )
