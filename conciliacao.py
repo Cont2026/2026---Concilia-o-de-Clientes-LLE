@@ -20,6 +20,7 @@ DESCROPER_VALIDAS = [
     "complemento icms st - saida",
     "complemento ipi venda",
     "bonificacao a clientes",
+    "Venda Consumo/Ativo"
 ]
 
 TIPTIT_VALIDOS = [
