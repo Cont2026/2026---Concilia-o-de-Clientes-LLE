@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 
+import banco
 from receitas import RECEITAS
 from conciliacao import (
     ler_contabil,
@@ -42,22 +43,25 @@ def norm_nome(s):
     s = re.sub(r"[^a-zA-Z0-9À-ÿ ]", "", str(s))
     return " ".join(s.split()).upper()
 
+def mes_key(mes_ref):
+    ano, mes = mes_ref
+    return f"{int(ano):04d}-{int(mes):02d}"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Store compartilhado (em memória do servidor) — Onda 2
-# Obs.: a persistência definitiva (Neon) entra na Entrega 3. Por enquanto o
-# resultado vive enquanto o servidor estiver de pé, compartilhado entre sessões.
+# Store em memória do servidor (bases/resultados da sessão de trabalho).
+# A ANÁLISE (observações + fantasmas) é persistida no Neon por mês+conta.
 # ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def _get_store():
     return {
         "processado": False,
-        "mes_ref": None,          # (ano, mes)
-        "bases": {},              # {"receita": df, "despesa": df}
-        "contabeis": {},          # {conta_id: df_contabil_raw}
-        "atrib": {},              # {conta_id: {idx: codparc}}
-        "resultados": {},         # {conta_id: dict de conciliar_conta}
-        "obs": {},                # {conta_id: {codparc: texto}}
+        "mes_ref": None,
+        "bases": {},
+        "contabeis": {},
+        "atrib": {},
+        "resultados": {},
+        "obs": {},
     }
 
 store = _get_store()
@@ -65,7 +69,6 @@ store = _get_store()
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
          "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
-# Mapa: qual uploader alimenta cada conta contábil
 CONTAS_CONTABEIS = {
     "clientes": "Clientes",
     "adiantamento": "Adiantamento de Clientes",
@@ -127,42 +130,72 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — navegação entre contas
+# SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 📁 Conciliações")
+
+    # Status do Neon
+    if banco.disponivel():
+        st.caption("💾 Neon conectado — análise salva automaticamente.")
+    else:
+        st.caption("⚠️ Sem Neon — análise só na memória desta sessão.")
+
     if store["processado"]:
         ano, mes = store["mes_ref"]
+        mk = mes_key(store["mes_ref"])
         st.caption(f"Mês em análise: **{MESES[mes-1]}/{ano}**")
         st.markdown("---")
+
         contas_ok = [cid for cid in RECEITAS if cid in store["resultados"]]
         if "conta_ativa" not in st.session_state or st.session_state.conta_ativa not in contas_ok:
             st.session_state.conta_ativa = contas_ok[0] if contas_ok else None
 
         for cid in contas_ok:
-            res = store["resultados"][cid]
-            qtd = len(res["divergentes"])
-            ativo = "▶ " if st.session_state.conta_ativa == cid else ""
-            if st.button(f"{ativo}{RECEITAS[cid]['nome']}  ({qtd})",
+            qtd = len(store["resultados"][cid]["divergentes"])
+            marca = "▶ " if st.session_state.conta_ativa == cid else ""
+            if st.button(f"{marca}{RECEITAS[cid]['nome']}  ({qtd})",
                          key=f"nav_{cid}", use_container_width=True):
                 st.session_state.conta_ativa = cid
                 st.rerun()
 
         st.markdown("---")
-        if st.button("🔄 Nova conciliação (limpar tudo)", use_container_width=True):
+        with st.expander("🧹 Resetar análise"):
+            st.caption("Apaga observações e fantasmas salvos das contas escolhidas (só deste mês).")
+            nomes_sel = st.multiselect(
+                "Contas a resetar:",
+                [RECEITAS[c]["nome"] for c in contas_ok],
+                key="reset_sel",
+            )
+            confirma = st.checkbox("Confirmo que quero apagar", key="reset_conf")
+            if st.button("Resetar selecionadas", use_container_width=True):
+                if nomes_sel and confirma:
+                    ids = [c for c in contas_ok if RECEITAS[c]["nome"] in nomes_sel]
+                    for cid in ids:
+                        banco.resetar(mk, cid)
+                        store["obs"][cid] = {}
+                        store["atrib"][cid] = {}
+                        recomputa_conta(cid)
+                    st.success(f"Resetadas: {', '.join(nomes_sel)}")
+                    st.rerun()
+                else:
+                    st.warning("Escolha ao menos uma conta e marque a confirmação.")
+
+        st.markdown("---")
+        if st.button("↩ Nova conciliação (voltar ao upload)", use_container_width=True):
             store.update({
                 "processado": False, "mes_ref": None, "bases": {},
                 "contabeis": {}, "atrib": {}, "resultados": {}, "obs": {},
             })
             st.session_state.pop("conta_ativa", None)
             st.rerun()
-        st.caption("O reset por conta (uma, várias ou todas) entra junto com o Neon, na próxima entrega.")
+        st.caption("Isto não apaga o que está salvo no Neon — só limpa a sessão para subir novos arquivos.")
     else:
         st.caption("Suba os arquivos e clique em Processar para começar.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TELA DE UPLOAD (quando ainda não processou)
+# TELA DE UPLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 if not store["processado"]:
     st.markdown('<div class="secao-titulo">🗓️ Mês da conciliação</div>', unsafe_allow_html=True)
@@ -198,8 +231,7 @@ if not store["processado"]:
                  disabled=not (tem_receita and tem_algum_contabil)):
         with st.spinner("Lendo arquivos e processando as contas..."):
             try:
-                bases = {}
-                bases["receita"] = ler_financeiro(up_receita)
+                bases = {"receita": ler_financeiro(up_receita)}
                 if up_despesa is not None:
                     bases["despesa"] = ler_financeiro(up_despesa)
 
@@ -209,6 +241,7 @@ if not store["processado"]:
                 store["atrib"] = {}
                 store["resultados"] = {}
                 store["obs"] = {}
+                mk = mes_key(store["mes_ref"])
 
                 for cid in RECEITAS:
                     up = ups_contabil.get(cid)
@@ -216,10 +249,19 @@ if not store["processado"]:
                         continue
                     df_cont = ler_contabil(up)
                     store["contabeis"][cid] = df_cont
-                    store["obs"].setdefault(cid, {})
-                    store["atrib"].setdefault(cid, {})
+
+                    # carrega análise salva no Neon para este mês/conta
+                    obs_salvas, atrib_salvas = banco.carregar(mk, cid)
+                    store["obs"][cid] = obs_salvas
+                    store["atrib"][cid] = atrib_salvas
+
+                    # aplica os fantasmas já atribuídos e concilia
+                    df_apl = df_cont.copy()
+                    for idx, cod in atrib_salvas.items():
+                        if idx in df_apl.index:
+                            df_apl.loc[idx, "CODPARC"] = cod
                     store["resultados"][cid] = conciliar_conta(
-                        RECEITAS[cid], df_cont, bases, store["mes_ref"]
+                        RECEITAS[cid], df_apl, bases, store["mes_ref"]
                     )
 
                 store["processado"] = True
@@ -230,7 +272,7 @@ if not store["processado"]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TELA DE RESULTADO — uma conta por vez
+# TELA DE RESULTADO
 # ══════════════════════════════════════════════════════════════════════════════
 else:
     conta = st.session_state.get("conta_ativa")
@@ -238,6 +280,7 @@ else:
         st.info("Selecione uma conta na barra lateral.")
         st.stop()
 
+    mk = mes_key(store["mes_ref"])
     receita = RECEITAS[conta]
     res = store["resultados"][conta]
     df_divergentes = res["divergentes"]
@@ -263,9 +306,7 @@ else:
     orfaos_cli = res["orfaos_cli"]
     if len(orfaos_cli) > 0:
         with st.expander(f"👻 Fantasmas a atribuir nesta conta ({len(orfaos_cli)})", expanded=False):
-            st.caption("Lançamentos contábeis sem CODPARC. Atribua um código e clique em aplicar; "
-                       "quem ficar em branco continua fora do cálculo por parceiro.")
-            # sugestão de CODPARC por nome
+            st.caption("Lançamentos contábeis sem CODPARC. Atribua um código e clique em aplicar.")
             cli_ok = res["cli_ok"]
             nomes_map = {
                 norm_nome(r["NOMEPARC"]): r["CODPARC"]
@@ -289,6 +330,7 @@ else:
                         a4.warning("Só números")
             if st.button("✅ Aplicar atribuições", key=f"aplicar_orf_{conta}"):
                 store["atrib"][conta] = novas
+                banco.salvar_atrib(mk, conta, novas)
                 recomputa_conta(conta)
                 st.rerun()
 
@@ -326,6 +368,7 @@ else:
                                  label_visibility="collapsed", placeholder="Observação...")
         if nova_obs != obs_atual:
             obs_conta[codparc] = nova_obs
+            banco.salvar_obs(mk, conta, codparc, nova_obs)
 
     st.markdown("<div style='border-bottom:2px solid #041747;margin-bottom:16px'></div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
