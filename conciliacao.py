@@ -1,66 +1,18 @@
 """
-Lógica de conciliação de clientes LLE
-Contábil (Clientes) × Financeiro (Data Base)
+Motor de conciliação — Grupo LLE
+=================================
+Contábil × Financeiro (Data Base), consolidado por CODPARC.
+
+Este arquivo é GENÉRICO: ele não conhece as regras de nenhuma conta.
+As regras moram em `receitas.py`. O motor recebe uma receita e a executa.
+
+ONDA 1: só a conta Clientes está ligada. `filtrar_financeiro` sem receita usa
+a de Clientes, então o app atual continua funcionando exatamente como hoje.
 """
 import unicodedata
 import pandas as pd
 
-
-# ── Listas canônicas do PROMPT ────────────────────────────────────────────────
-
-DESCROPER_VALIDAS = [
-    "importacao cheque receita",
-    "pagamentos extemporaneos",
-    "venda",
-    "venda (gold)",
-    "venda (importacao xml)",
-    "venda (pisa)",
-    "venda cupom fiscal",
-    "venda cupom fiscal gold",
-    "complemento icms st - saida",
-    "complemento ipi venda",
-    "bonificacao a clientes",
-    "venda consumo/ativo",
-]
-
-TIPTIT_VALIDOS = [
-    "adiantamento",
-    "antigo cred c6 pay 10x",
-    "antigo cred c6 pay 12x",
-    "antigo stone credito a vista",
-    "antigo cartao credito parcelada",
-    "boleto",
-    "boleto registrado",
-    "boleto registrado liquidado",
-    "boleto registrado alterado",
-    "boleto rejeitado",
-    "boleto retorno/titulo vencido",
-    "credito manual",
-    "credito automatico",
-    "deposito bancario",
-    "dinheiro",
-    "duplicata",
-    "pix",
-    "pix qr code presencial",
-    "edi-dda",
-]
-
-# Fragmentos de TIPTIT que devem ser EXCLUÍDOS (cartões)
-CARTOES_EXCLUIDOS = [
-    "getnet tef",
-    "cred parc",
-    "credito a distancia",
-    "credito a vista",
-    "debito getnet",
-    "debito- vis",
-    "debito- mas",
-    "debito- elo",
-    "cred tef",
-    "deb tef",
-]
-
-# CODPARC do parceiro SEPM — entra independente do TIPTIT
-CODPARC_SEPM = 41007
+from receitas import RECEITA_CLIENTES
 
 # Valor mínimo (R$) para considerar uma compensação entre parceiros.
 # Serve para ignorar centavos de arredondamento (ex.: pares de 0,01).
@@ -79,7 +31,8 @@ def norm(valor):
 
 
 def eh_cartao_excluido(tiptit_norm: str) -> bool:
-    for frag in CARTOES_EXCLUIDOS:
+    """Compatibilidade: usa a lista de exclusão de Clientes."""
+    for frag in RECEITA_CLIENTES.get("excluir_cartoes", []):
         if frag in tiptit_norm:
             return True
     return False
@@ -105,26 +58,54 @@ def ler_financeiro(arquivo) -> pd.DataFrame:
     return df
 
 
-# ── Filtro LLE na base financeira ─────────────────────────────────────────────
+# ── Filtro por receita ────────────────────────────────────────────────────────
 
-def filtrar_financeiro(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica filtros canônicos LLE e retorna base filtrada."""
+def filtrar_por_receita(df: pd.DataFrame, receita: dict) -> pd.DataFrame:
+    """
+    Aplica os filtros de UMA receita à base financeira e retorna o recorte.
+    Cada condição só é aplicada se a receita a definir — assim uma receita
+    simples (poucos filtros) e uma completa (Clientes) convivem no mesmo motor.
+    """
     df = df.copy()
     df["_descrnat"] = df["DESCRNAT"].apply(norm)
     df["_descroper"] = df["DESCROPER"].apply(norm)
     df["_tiptit"] = df["TIPTIT"].apply(norm)
 
-    mask = (
-        (df["_descrnat"] == "vendas notas fiscais")
-        & (df["_descroper"].isin(DESCROPER_VALIDAS))
-        & (
-            (df["_tiptit"].isin(TIPTIT_VALIDOS))
-            | (df["CODPARC"] == CODPARC_SEPM)
-        )
-        & (~df["_tiptit"].apply(eh_cartao_excluido))
-    )
+    descrnat_ok = [norm(x) for x in (receita.get("descrnat") or [])]
+    descroper_ok = [norm(x) for x in (receita.get("descroper") or [])]
+    tiptit_ok = [norm(x) for x in (receita.get("tiptit") or [])]
+    cartoes = [norm(x) for x in (receita.get("excluir_cartoes") or [])]
+    excecao = receita.get("excecao_codparc", None)
+
+    mask = pd.Series(True, index=df.index)
+
+    if descrnat_ok:
+        mask &= df["_descrnat"].isin(descrnat_ok)
+
+    if descroper_ok:
+        mask &= df["_descroper"].isin(descroper_ok)
+
+    if tiptit_ok:
+        cond_tip = df["_tiptit"].isin(tiptit_ok)
+        if excecao is not None:
+            cond_tip = cond_tip | (df["CODPARC"] == excecao)
+        mask &= cond_tip
+
+    if cartoes:
+        eh_cartao = df["_tiptit"].apply(lambda t: any(frag in t for frag in cartoes))
+        mask &= ~eh_cartao
 
     return df[mask].drop(columns=["_descrnat", "_descroper", "_tiptit"])
+
+
+def filtrar_financeiro(df: pd.DataFrame, receita: dict = None) -> pd.DataFrame:
+    """
+    Compatível com o app atual: chamado sem receita, usa a de Clientes —
+    resultado idêntico ao de hoje.
+    """
+    if receita is None:
+        receita = RECEITA_CLIENTES
+    return filtrar_por_receita(df, receita)
 
 
 # ── Detecção de órfãos ────────────────────────────────────────────────────────
