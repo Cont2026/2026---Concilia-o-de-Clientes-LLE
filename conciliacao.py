@@ -58,24 +58,28 @@ def ler_financeiro(arquivo) -> pd.DataFrame:
     return df
 
 
-# ── Filtro por receita ────────────────────────────────────────────────────────
+# ── Filtro por FONTE (um recorte de uma Data Base) ────────────────────────────
 
-def filtrar_por_receita(df: pd.DataFrame, receita: dict) -> pd.DataFrame:
+def filtrar_fonte(df: pd.DataFrame, fonte: dict) -> pd.DataFrame:
     """
-    Aplica os filtros de UMA receita à base financeira e retorna o recorte.
-    Cada condição só é aplicada se a receita a definir — assim uma receita
-    simples (poucos filtros) e uma completa (Clientes) convivem no mesmo motor.
+    Aplica os filtros de UMA fonte a UMA Data Base e retorna o recorte.
+    Cada condição só é aplicada se a fonte a definir — assim uma fonte simples
+    (só um TOP) e uma completa (Clientes) usam o mesmo mecanismo.
+
+    Campos possíveis: descrnat, descroper, tiptit, codtipoper,
+    excluir_cartoes, excecao_codparc.
     """
     df = df.copy()
-    df["_descrnat"] = df["DESCRNAT"].apply(norm)
-    df["_descroper"] = df["DESCROPER"].apply(norm)
-    df["_tiptit"] = df["TIPTIT"].apply(norm)
+    df["_descrnat"] = df["DESCRNAT"].apply(norm) if "DESCRNAT" in df.columns else ""
+    df["_descroper"] = df["DESCROPER"].apply(norm) if "DESCROPER" in df.columns else ""
+    df["_tiptit"] = df["TIPTIT"].apply(norm) if "TIPTIT" in df.columns else ""
 
-    descrnat_ok = [norm(x) for x in (receita.get("descrnat") or [])]
-    descroper_ok = [norm(x) for x in (receita.get("descroper") or [])]
-    tiptit_ok = [norm(x) for x in (receita.get("tiptit") or [])]
-    cartoes = [norm(x) for x in (receita.get("excluir_cartoes") or [])]
-    excecao = receita.get("excecao_codparc", None)
+    descrnat_ok = [norm(x) for x in (fonte.get("descrnat") or [])]
+    descroper_ok = [norm(x) for x in (fonte.get("descroper") or [])]
+    tiptit_ok = [norm(x) for x in (fonte.get("tiptit") or [])]
+    cartoes = [norm(x) for x in (fonte.get("excluir_cartoes") or [])]
+    excecao = fonte.get("excecao_codparc", None)
+    tops = fonte.get("codtipoper") or []
 
     mask = pd.Series(True, index=df.index)
 
@@ -95,17 +99,102 @@ def filtrar_por_receita(df: pd.DataFrame, receita: dict) -> pd.DataFrame:
         eh_cartao = df["_tiptit"].apply(lambda t: any(frag in t for frag in cartoes))
         mask &= ~eh_cartao
 
+    if tops:
+        if "CODTIPOPER" in df.columns:
+            top_col = pd.to_numeric(df["CODTIPOPER"], errors="coerce")
+            mask &= top_col.isin(tops)
+        else:
+            mask &= False
+
     return df[mask].drop(columns=["_descrnat", "_descroper", "_tiptit"])
+
+
+def _fontes_da_receita(receita: dict) -> list:
+    """
+    Normaliza uma receita para uma lista de fontes.
+    - Receita com "fontes": usa como está.
+    - Receita "plana" (Clientes): monta uma fonte única a partir dos campos do topo.
+    """
+    if receita.get("fontes"):
+        return receita["fontes"]
+    return [{
+        "base": receita.get("data_base", "receita"),
+        "descrnat": receita.get("descrnat"),
+        "descroper": receita.get("descroper"),
+        "tiptit": receita.get("tiptit"),
+        "codtipoper": receita.get("codtipoper"),
+        "excluir_cartoes": receita.get("excluir_cartoes"),
+        "excecao_codparc": receita.get("excecao_codparc"),
+    }]
+
+
+def _aplicar_corte_dtentsai1(df: pd.DataFrame, mes_ref) -> pd.DataFrame:
+    """
+    Corte do Adiantamento: mantém DTENTSAI_1 até o fim do mês conciliado
+    e remove o que caiu no mês seguinte em diante.
+    `mes_ref` = (ano, mes). Linhas sem DTENTSAI_1 são mantidas (não há como cortar).
+    """
+    if "DTENTSAI_1" not in df.columns or mes_ref is None:
+        return df
+    ano, mes = mes_ref
+    dt = pd.to_datetime(df["DTENTSAI_1"], errors="coerce")
+    ultimo_dia = pd.Timestamp(year=int(ano), month=int(mes), day=1) + pd.offsets.MonthEnd(0)
+    manter = dt.isna() | (dt <= ultimo_dia)
+    return df[manter]
+
+
+def montar_financeiro(receita: dict, bases: dict, mes_ref=None) -> pd.DataFrame:
+    """
+    Monta o recorte financeiro de UMA conta, juntando todas as suas fontes.
+    `bases` = {"receita": df_receita, "despesa": df_despesa} (podem faltar).
+    Aplica o corte por DTENTSAI_1 se a receita pedir.
+    """
+    partes = []
+    for fonte in _fontes_da_receita(receita):
+        df_base = bases.get(fonte.get("base", "receita"))
+        if df_base is None or len(df_base) == 0:
+            continue
+        partes.append(filtrar_fonte(df_base, fonte))
+
+    if partes:
+        df = pd.concat(partes, ignore_index=True)
+    else:
+        df = pd.DataFrame()
+
+    if receita.get("corte_dtentsai1") and len(df):
+        df = _aplicar_corte_dtentsai1(df, mes_ref)
+
+    return df
 
 
 def filtrar_financeiro(df: pd.DataFrame, receita: dict = None) -> pd.DataFrame:
     """
-    Compatível com o app atual: chamado sem receita, usa a de Clientes —
-    resultado idêntico ao de hoje.
+    Compatível com o app atual: chamado sem receita e com UMA base (Receita),
+    usa a de Clientes — resultado idêntico ao de hoje.
     """
     if receita is None:
         receita = RECEITA_CLIENTES
-    return filtrar_por_receita(df, receita)
+    return montar_financeiro(receita, {"receita": df}, mes_ref=None)
+
+
+def conciliar_conta(receita: dict, df_contabil: pd.DataFrame, bases: dict, mes_ref=None) -> dict:
+    """
+    Executa a conciliação completa de UMA conta e devolve tudo pronto para a tela.
+    Não mistura com outras contas — cada chamada é isolada.
+    """
+    df_fin = montar_financeiro(receita, bases, mes_ref)
+    cli_ok, fin_ok, orfaos_cli, orfaos_fin = separar_orfaos(df_contabil, df_fin)
+    divergentes = conciliar(cli_ok, fin_ok)
+    resumo = resumo_macro(cli_ok, fin_ok, divergentes, orfaos_cli, orfaos_fin)
+    return {
+        "df_fin": df_fin,
+        "cli_ok": cli_ok,
+        "fin_ok": fin_ok,
+        "orfaos_cli": orfaos_cli,
+        "orfaos_fin": orfaos_fin,
+        "divergentes": divergentes,
+        "resumo": resumo,
+    }
 
 
 # ── Detecção de órfãos ────────────────────────────────────────────────────────
