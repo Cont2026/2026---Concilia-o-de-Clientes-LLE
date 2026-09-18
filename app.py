@@ -1,28 +1,26 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
+import re
+
+from receitas import RECEITAS
 from conciliacao import (
     ler_contabil,
     ler_financeiro,
-    filtrar_financeiro,
-    separar_orfaos,
-    conciliar,
-    resumo_macro,
+    conciliar_conta,
     drill_down,
     gerar_excel,
 )
 
-# ── Formatação BR de valores e inteiros ───────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Formatação BR
+# ══════════════════════════════════════════════════════════════════════════════
 def fmt_brl(valor):
-    """Formata número no padrão brasileiro: R$ 1.234.567,89."""
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except (ValueError, TypeError):
         return valor
 
 def fmt_int(valor):
-    """Formata NF/inteiro sem casas decimais e sem '.0'. Retorna '—' se vazio."""
     try:
         if pd.isna(valor):
             return "—"
@@ -31,7 +29,6 @@ def fmt_int(valor):
         return "—" if valor in (None, "") else str(valor)
 
 def fmt_nf(valor):
-    """Formata NF em tabelas (Styler): inteiro puro, vazio se nulo."""
     try:
         if pd.isna(valor):
             return ""
@@ -39,505 +36,269 @@ def fmt_nf(valor):
     except (ValueError, TypeError):
         return "" if valor in (None, "") else str(valor)
 
-# ── Persistência completa (bases + resultado + observações) ─────────────────
-ESTADO_FILE  = "estado_lle.pkl"
-OBS_FILE     = "observacoes_lle.json"
+def norm_nome(s):
+    if not s:
+        return ""
+    s = re.sub(r"[^a-zA-Z0-9À-ÿ ]", "", str(s))
+    return " ".join(s.split()).upper()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Store compartilhado (em memória do servidor) — Onda 2
+# Obs.: a persistência definitiva (Neon) entra na Entrega 3. Por enquanto o
+# resultado vive enquanto o servidor estiver de pé, compartilhado entre sessões.
+# ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def _get_store():
-    """Cache compartilhado em memória entre todas as sessões ativas."""
-    return {"estado": None, "obs": {}}
-
-# ── Observações ───────────────────────────────────────────────────────────────
-def carregar_observacoes() -> dict:
-    store = _get_store()
-    if store["obs"]:
-        return dict(store["obs"])
-    if os.path.exists(OBS_FILE):
-        try:
-            with open(OBS_FILE, "r", encoding="utf-8") as f:
-                store["obs"] = json.load(f)
-        except Exception:
-            store["obs"] = {}
-    return dict(store["obs"])
-
-def salvar_observacoes(obs: dict):
-    store = _get_store()
-    store["obs"] = dict(obs)
-    try:
-        with open(OBS_FILE, "w", encoding="utf-8") as f:
-            json.dump(obs, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-# ── Estado completo (bases + resultado + resumo + orfaos) ────────────────────
-def salvar_estado(df_cli_ok, df_fin_ok, df_fin_filtrado, orfaos_cli, orfaos_fin, resultado, resumo):
-    import pickle
-    store = _get_store()
-    estado = {
-        "df_cli_ok": df_cli_ok,
-        "df_fin_ok": df_fin_ok,
-        "df_fin_filtrado": df_fin_filtrado,
-        "orfaos_cli": orfaos_cli,
-        "orfaos_fin": orfaos_fin,
-        "resultado": resultado,
-        "resumo": resumo,
+    return {
+        "processado": False,
+        "mes_ref": None,          # (ano, mes)
+        "bases": {},              # {"receita": df, "despesa": df}
+        "contabeis": {},          # {conta_id: df_contabil_raw}
+        "atrib": {},              # {conta_id: {idx: codparc}}
+        "resultados": {},         # {conta_id: dict de conciliar_conta}
+        "obs": {},                # {conta_id: {codparc: texto}}
     }
-    store["estado"] = estado
-    try:
-        with open(ESTADO_FILE, "wb") as f:
-            pickle.dump(estado, f)
-    except Exception:
-        pass
 
-def carregar_estado() -> dict:
-    import pickle
-    store = _get_store()
-    # Sempre lê do arquivo para garantir dados frescos
-    if os.path.exists(ESTADO_FILE):
-        try:
-            with open(ESTADO_FILE, "rb") as f:
-                estado = pickle.load(f)
-                store["estado"] = estado
-                return dict(estado)
-        except Exception:
-            pass
-    return {}
+store = _get_store()
 
-def limpar_estado():
-    store = _get_store()
-    store["estado"] = None
-    store["obs"] = {}
-    for f in [ESTADO_FILE, OBS_FILE]:
-        try:
-            if os.path.exists(f):
-                os.remove(f)
-        except Exception:
-            pass
+MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
-def limpar_observacoes():
-    limpar_estado()
+# Mapa: qual uploader alimenta cada conta contábil
+CONTAS_CONTABEIS = {
+    "clientes": "Clientes",
+    "adiantamento": "Adiantamento de Clientes",
+    "cartao_credito": "Cartão de Crédito",
+    "cartao_debito": "Cartão de Débito",
+    "operacao_cartao": "Operação com Cartão",
+}
 
-def resetar_cache_store():
-    """Força limpeza total do cache em memória — chamado antes de salvar novo estado."""
-    store = _get_store()
-    store["estado"] = None
-    store["obs"] = {}
 
-# ── Configuração da página ────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Conciliação de Clientes — LLE",
-    page_icon="📊",
-    layout="wide",
-)
+def recomputa_conta(conta_id):
+    """Reaplica as atribuições de fantasmas e recalcula uma conta."""
+    receita = RECEITAS[conta_id]
+    raw = store["contabeis"].get(conta_id)
+    if raw is None:
+        return
+    df_cli = raw.copy()
+    for idx, cod in store["atrib"].get(conta_id, {}).items():
+        if idx in df_cli.index:
+            df_cli.loc[idx, "CODPARC"] = cod
+    store["resultados"][conta_id] = conciliar_conta(
+        receita, df_cli, store["bases"], store["mes_ref"]
+    )
 
-# ── CSS padrão visual LLE ─────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuração e CSS
+# ══════════════════════════════════════════════════════════════════════════════
+st.set_page_config(page_title="Conciliações — LLE", page_icon="📊", layout="wide")
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Montserrat', Calibri, sans-serif;
-}
-
-/* Header principal */
-.lle-header {
-    background: #041747;
-    padding: 24px 32px;
-    border-radius: 8px;
-    margin-bottom: 24px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-}
-.lle-header h1 {
-    color: #FFFFFF;
-    font-size: 22px;
-    font-weight: 700;
-    margin: 0;
-}
-.lle-header p {
-    color: #FAC318;
-    font-size: 13px;
-    margin: 4px 0 0 0;
-}
-
-/* Cards de métricas */
-.metric-card {
-    background: #041747;
-    border-radius: 8px;
-    padding: 16px 20px;
-    text-align: center;
-}
-.metric-card .label {
-    color: #FAC318;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-.metric-card .value {
-    color: #FFFFFF;
-    font-size: 22px;
-    font-weight: 700;
-    margin-top: 4px;
-}
-.metric-card .value.ok { color: #0F8C3B; }
-.metric-card .value.divergencia { color: #FF4444; }
-
-/* Seção */
-.secao-titulo {
-    background: #041747;
-    color: #FFFFFF;
-    font-weight: 700;
-    font-size: 13px;
-    padding: 8px 16px;
-    border-radius: 6px 6px 0 0;
-    margin-bottom: 0;
-    letter-spacing: 0.5px;
-}
-
-/* Status badges */
-.badge-contabil {
-    background: #FFE6E6;
-    color: #C00000;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-}
-.badge-financeiro {
-    background: #FFE6E6;
-    color: #C00000;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-}
-.badge-diferenca {
-    background: #FFF4CC;
-    color: #041747;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-}
-
-/* Drill-down NF status */
-.nf-ok { background-color: #D9F2DC; color: #0F8C3B; }
-.nf-diverge { background-color: #FFF4CC; color: #041747; font-weight: bold; }
-.nf-so { background-color: #FFE6E6; color: #C00000; }
-.nf-compensa { background-color: #F2F2F2; color: #595959; }
-
-/* Upload area */
-.stFileUploader > div {
-    border: 2px dashed #0071FE !important;
-    border-radius: 8px !important;
-}
-
-/* Botões */
-.stButton > button {
-    background: #041747 !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    font-family: 'Montserrat', sans-serif !important;
-    font-weight: 700 !important;
-    border-radius: 6px !important;
-    padding: 8px 24px !important;
-}
-.stButton > button:hover {
-    background: #0071FE !important;
-}
-
-/* Download button */
-.stDownloadButton > button {
-    background: #0F8C3B !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    font-family: 'Montserrat', sans-serif !important;
-    font-weight: 700 !important;
-    border-radius: 6px !important;
-}
-
-/* Tabela parceiros */
-.tabela-parceiros th {
-    background: #041747 !important;
-    color: white !important;
-}
-
-/* Divider */
-hr { border-color: #D9D9D9; }
-
-/* Selectbox */
-.stSelectbox label { font-weight: 600; color: #041747; }
+html, body, [class*="css"] { font-family: 'Montserrat', Calibri, sans-serif; }
+.lle-header { background:#041747; padding:20px 28px; border-radius:8px; margin-bottom:20px; }
+.lle-header h1 { color:#FFFFFF; font-size:20px; font-weight:700; margin:0; }
+.lle-header p { color:#FAC318; font-size:12px; margin:4px 0 0 0; }
+.metric-card { background:#041747; border-radius:8px; padding:14px 18px; text-align:center; }
+.metric-card .label { color:#FAC318; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
+.metric-card .value { color:#FFFFFF; font-size:20px; font-weight:700; margin-top:4px; }
+.metric-card .value.ok { color:#0F8C3B; }
+.metric-card .value.divergencia { color:#FF4444; }
+.secao-titulo { background:#041747; color:#FFFFFF; font-weight:700; font-size:13px; padding:8px 16px; border-radius:6px 6px 0 0; letter-spacing:0.5px; }
+.stButton > button { background:#041747 !important; color:#FFFFFF !important; border:none !important; font-family:'Montserrat',sans-serif !important; font-weight:700 !important; border-radius:6px !important; }
+.stButton > button:hover { background:#0071FE !important; }
+.stDownloadButton > button { background:#0F8C3B !important; color:#FFFFFF !important; border:none !important; font-weight:700 !important; border-radius:6px !important; }
+.stFileUploader > div { border:2px dashed #0071FE !important; border-radius:8px !important; }
+hr { border-color:#D9D9D9; }
+section[data-testid="stSidebar"] { background:#0A1F3C; }
+section[data-testid="stSidebar"] * { color:#FFFFFF; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="lle-header">
-    <div>
-        <h1>📊 Conciliação de Clientes — Grupo LLE</h1>
-        <p>Contabilidade · Comparação Contábil × Financeiro por CODPARC</p>
-    </div>
+    <h1>📊 Conciliações — Grupo LLE</h1>
+    <p>Contabilidade · Comparação Contábil × Financeiro por CODPARC</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Estado da sessão ──────────────────────────────────────────────────────────
-if "etapa" not in st.session_state:
-    # Tentar restaurar estado salvo
-    _estado = carregar_estado()
-    if _estado:
-        st.session_state.etapa = "processar"
-        st.session_state.df_cli_ok       = _estado.get("df_cli_ok")
-        st.session_state.df_fin_ok       = _estado.get("df_fin_ok")
-        st.session_state.df_fin_filtrado = _estado.get("df_fin_filtrado")
-        st.session_state.orfaos_cli      = _estado.get("orfaos_cli")
-        st.session_state.orfaos_fin      = _estado.get("orfaos_fin")
-        st.session_state.resultado       = _estado.get("resultado")
-        st.session_state.resumo          = _estado.get("resumo")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR — navegação entre contas
+# ══════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("### 📁 Conciliações")
+    if store["processado"]:
+        ano, mes = store["mes_ref"]
+        st.caption(f"Mês em análise: **{MESES[mes-1]}/{ano}**")
+        st.markdown("---")
+        contas_ok = [cid for cid in RECEITAS if cid in store["resultados"]]
+        if "conta_ativa" not in st.session_state or st.session_state.conta_ativa not in contas_ok:
+            st.session_state.conta_ativa = contas_ok[0] if contas_ok else None
+
+        for cid in contas_ok:
+            res = store["resultados"][cid]
+            qtd = len(res["divergentes"])
+            ativo = "▶ " if st.session_state.conta_ativa == cid else ""
+            if st.button(f"{ativo}{RECEITAS[cid]['nome']}  ({qtd})",
+                         key=f"nav_{cid}", use_container_width=True):
+                st.session_state.conta_ativa = cid
+                st.rerun()
+
+        st.markdown("---")
+        if st.button("🔄 Nova conciliação (limpar tudo)", use_container_width=True):
+            store.update({
+                "processado": False, "mes_ref": None, "bases": {},
+                "contabeis": {}, "atrib": {}, "resultados": {}, "obs": {},
+            })
+            st.session_state.pop("conta_ativa", None)
+            st.rerun()
+        st.caption("O reset por conta (uma, várias ou todas) entra junto com o Neon, na próxima entrega.")
     else:
-        st.session_state.etapa           = "upload"
-        st.session_state.df_cli_ok       = None
-        st.session_state.df_fin_ok       = None
-        st.session_state.df_fin_filtrado = None
-        st.session_state.orfaos_cli      = None
-        st.session_state.orfaos_fin      = None
-        st.session_state.resultado       = None
-        st.session_state.resumo          = None
-        st.session_state.df_cli_raw      = None
-if "observacoes" not in st.session_state:
-    st.session_state.observacoes = carregar_observacoes()
+        st.caption("Suba os arquivos e clique em Processar para começar.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ETAPA 1 — UPLOAD
+# TELA DE UPLOAD (quando ainda não processou)
 # ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.etapa == "upload":
+if not store["processado"]:
+    st.markdown('<div class="secao-titulo">🗓️ Mês da conciliação</div>', unsafe_allow_html=True)
+    cma, cmb, _ = st.columns([1, 1, 3])
+    mes_nome = cma.selectbox("Mês", MESES, index=5, key="sel_mes")
+    ano = cmb.number_input("Ano", min_value=2020, max_value=2100, value=2026, step=1, key="sel_ano")
+    mes = MESES.index(mes_nome) + 1
 
-    col1, col2 = st.columns(2)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="secao-titulo">📥 Bases Financeiras (Data Base)</div>', unsafe_allow_html=True)
+    cf1, cf2 = st.columns(2)
+    up_receita = cf1.file_uploader("Data Base — RECEITA", type=["xlsx"], key="up_receita")
+    up_despesa = cf2.file_uploader("Data Base — DESPESA", type=["xlsx"], key="up_despesa")
 
-    with col1:
-        st.markdown('<div class="secao-titulo">📁 Base Contábil (Clientes)</div>', unsafe_allow_html=True)
-        arq_cli = st.file_uploader(
-            "Arquivo exportado do sistema contábil",
-            type=["xlsx"],
-            key="upload_cli",
-            label_visibility="collapsed",
-        )
-        if arq_cli:
-            st.success(f"✅ {arq_cli.name}")
-
-    with col2:
-        st.markdown('<div class="secao-titulo">📁 Base Financeira (Data Base)</div>', unsafe_allow_html=True)
-        arq_fin = st.file_uploader(
-            "Arquivo exportado do sistema financeiro",
-            type=["xlsx"],
-            key="upload_fin",
-            label_visibility="collapsed",
-        )
-        if arq_fin:
-            st.success(f"✅ {arq_fin.name}")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="secao-titulo">📥 Bases Contábeis (uma por conta)</div>', unsafe_allow_html=True)
+    ups_contabil = {}
+    cols = st.columns(3)
+    for i, (cid, nome) in enumerate(CONTAS_CONTABEIS.items()):
+        ups_contabil[cid] = cols[i % 3].file_uploader(nome, type=["xlsx"], key=f"up_{cid}")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    if arq_cli and arq_fin:
-        if st.button("▶ Carregar e verificar bases", use_container_width=True):
-            with st.spinner("Lendo arquivos e aplicando filtros LLE..."):
-                try:
-                    df_cli = ler_contabil(arq_cli)
-                    df_fin_bruto = ler_financeiro(arq_fin)
-                    df_fin_filtrado = filtrar_financeiro(df_fin_bruto)
+    tem_receita = up_receita is not None
+    tem_algum_contabil = any(v is not None for v in ups_contabil.values())
 
-                    df_cli_ok, df_fin_ok, orfaos_cli, orfaos_fin = separar_orfaos(
-                        df_cli, df_fin_filtrado
+    if not tem_receita:
+        st.info("A Data Base de **Receita** é obrigatória para começar.")
+    if up_despesa is None:
+        st.warning("Sem a Data Base de **Despesa**, as contas *Operação com Cartão* e a parte de despesa do *Adiantamento* ficarão incompletas.")
+
+    if st.button("▶ Processar conciliações", use_container_width=True,
+                 disabled=not (tem_receita and tem_algum_contabil)):
+        with st.spinner("Lendo arquivos e processando as contas..."):
+            try:
+                bases = {}
+                bases["receita"] = ler_financeiro(up_receita)
+                if up_despesa is not None:
+                    bases["despesa"] = ler_financeiro(up_despesa)
+
+                store["bases"] = bases
+                store["mes_ref"] = (int(ano), int(mes))
+                store["contabeis"] = {}
+                store["atrib"] = {}
+                store["resultados"] = {}
+                store["obs"] = {}
+
+                for cid in RECEITAS:
+                    up = ups_contabil.get(cid)
+                    if up is None:
+                        continue
+                    df_cont = ler_contabil(up)
+                    store["contabeis"][cid] = df_cont
+                    store["obs"].setdefault(cid, {})
+                    store["atrib"].setdefault(cid, {})
+                    store["resultados"][cid] = conciliar_conta(
+                        RECEITAS[cid], df_cont, bases, store["mes_ref"]
                     )
 
-                    st.session_state.df_cli_raw = df_cli
-                    st.session_state.df_cli_ok = df_cli_ok
-                    st.session_state.df_fin_ok = df_fin_ok
-                    st.session_state.df_fin_filtrado = df_fin_filtrado
-                    st.session_state.orfaos_cli = orfaos_cli
-                    st.session_state.orfaos_fin = orfaos_fin
-
-                    total_orfaos = len(orfaos_cli) + len(orfaos_fin)
-
-                    if total_orfaos > 0:
-                        st.session_state.etapa = "orfaos"
-                    else:
-                        st.session_state.etapa = "processar"
-
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"Erro ao ler os arquivos: {e}")
-                    st.exception(e)
+                store["processado"] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao processar: {e}")
+                st.exception(e)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ETAPA 2 — ATRIBUIÇÃO DE ÓRFÃOS
+# TELA DE RESULTADO — uma conta por vez
 # ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.etapa == "orfaos":
+else:
+    conta = st.session_state.get("conta_ativa")
+    if not conta or conta not in store["resultados"]:
+        st.info("Selecione uma conta na barra lateral.")
+        st.stop()
 
-    orfaos_cli = st.session_state.orfaos_cli
-    orfaos_fin = st.session_state.orfaos_fin
-    df_cli_ok = st.session_state.df_cli_ok
+    receita = RECEITAS[conta]
+    res = store["resultados"][conta]
+    df_divergentes = res["divergentes"]
+    resumo = res["resumo"]
+    obs_conta = store["obs"].setdefault(conta, {})
 
-    # Mapa de nomes para sugestão de CODPARC (normalizado para casar com caracteres especiais)
-    import re
-    def norm_nome(s):
-        if not s:
-            return ""
-        s = re.sub(r'[^a-zA-Z0-9À-ÿ ]', '', str(s))
-        return ' '.join(s.split()).upper()
-
-    _nomes_df = (
-        df_cli_ok.groupby("NOMEPARC")["CODPARC"]
-        .first()
-        .reset_index()
-    )
-    nomes_codparc = {
-        norm_nome(row["NOMEPARC"]): row["CODPARC"]
-        for _, row in _nomes_df.iterrows()
-    }
-
-    st.markdown("""
-    <div style="background:#FFF4CC; border-left:4px solid #FAC318; padding:12px 16px; border-radius:4px; margin-bottom:16px;">
-        <strong style="color:#041747;">⚠️ Órfãos encontrados — atribua um CODPARC antes de conciliar</strong><br>
-        <span style="color:#595959; font-size:13px;">Lançamentos sem CODPARC não entram no cálculo por parceiro. 
-        Preencha o campo abaixo para cada um ou deixe em branco para manter como órfão.</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    atribuicoes = {}
-
-    if len(orfaos_cli) > 0:
-        st.markdown('<div class="secao-titulo">📋 Contábil — Lançamentos sem CODPARC</div>', unsafe_allow_html=True)
-        for idx, row in orfaos_cli.iterrows():
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 2])
-            c1.write(f"**{row.get('NOMEPARC', '—')}**")
-            c2.write(f"NF {fmt_int(row.get('NUMNOTA'))}")
-            c3.write(fmt_brl(row.get('VLRDESDOB', 0)))
-
-            # Sugestão automática pelo nome
-            sugestao = nomes_codparc.get(norm_nome(str(row.get("NOMEPARC", ""))), "")
-            cod = c4.text_input(
-                "CODPARC",
-                value=str(int(sugestao)) if sugestao else "",
-                key=f"orf_cli_{idx}",
-                label_visibility="collapsed",
-                placeholder="Digite o CODPARC",
-            )
-            if cod.strip():
-                try:
-                    atribuicoes[idx] = int(cod.strip())
-                except ValueError:
-                    c4.warning("Somente números")
-
-    if len(orfaos_fin) > 0:
-        st.markdown('<br><div class="secao-titulo">📋 Financeiro — Lançamentos sem CODPARC</div>', unsafe_allow_html=True)
-        for idx, row in orfaos_fin.iterrows():
-            c1, c2, c3 = st.columns([3, 2, 1])
-            c1.write(f"**{row.get('NOMEPARC', '—')}**")
-            c2.write(f"NF {fmt_int(row.get('NUMNOTA'))}")
-            c3.write(fmt_brl(row.get('VLRDESDOB', 0)))
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_btn1, col_btn2 = st.columns(2)
-
-    with col_btn1:
-        if st.button("✅ Confirmar e conciliar", use_container_width=True):
-            # Aplicar atribuições
-            orfaos_atualizados = orfaos_cli.copy()
-            for idx, codparc in atribuicoes.items():
-                orfaos_atualizados.loc[idx, "CODPARC"] = codparc
-
-            # Mesclar órfãos atualizados que ganharam CODPARC
-            orfaos_com_cod = orfaos_atualizados[
-                ~(orfaos_atualizados["CODPARC"].isna() | (orfaos_atualizados["CODPARC"] == 0))
-            ]
-            orfaos_sem_cod = orfaos_atualizados[
-                orfaos_atualizados["CODPARC"].isna() | (orfaos_atualizados["CODPARC"] == 0)
-            ]
-
-            df_cli_final = pd.concat(
-                [st.session_state.df_cli_ok, orfaos_com_cod], ignore_index=True
-            )
-
-            st.session_state.df_cli_ok = df_cli_final
-            st.session_state.orfaos_cli = orfaos_sem_cod  # apenas os que ficaram órfãos
-            st.session_state.etapa = "processar"
-            st.rerun()
-
-    with col_btn2:
-        if st.button("↩ Voltar ao upload", use_container_width=False):
-            st.session_state.etapa = "upload"
-            st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ETAPA 3 — PROCESSAMENTO E RESULTADO
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.etapa == "processar":
-
-    if st.session_state.resultado is None:
-        with st.spinner("Processando conciliação..."):
-            df_cli_ok = st.session_state.df_cli_ok
-            df_fin_ok = st.session_state.df_fin_ok
-            orfaos_cli = st.session_state.orfaos_cli
-            orfaos_fin = st.session_state.orfaos_fin
-            df_fin_filtrado = st.session_state.df_fin_filtrado
-
-            df_divergentes = conciliar(df_cli_ok, df_fin_ok)
-            res = resumo_macro(df_cli_ok, df_fin_ok, df_divergentes, orfaos_cli, orfaos_fin)
-
-            st.session_state.resultado = df_divergentes
-            st.session_state.resumo = res
-            resetar_cache_store()
-            salvar_estado(
-                st.session_state.df_cli_ok,
-                st.session_state.df_fin_ok,
-                st.session_state.df_fin_filtrado,
-                st.session_state.orfaos_cli,
-                st.session_state.orfaos_fin,
-                df_divergentes,
-                res,
-            )
-
-    df_divergentes = st.session_state.resultado
-    res = st.session_state.resumo
-
-    # ── Métricas macro ─────────────────────────────────────────────────────────
-    st.markdown('<div class="secao-titulo">📈 Resumo da Conciliação</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="secao-titulo">📈 {receita["nome"]} — Resumo</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-
     def card(col, label, value, classe=""):
-        col.markdown(f"""
-        <div class="metric-card">
-            <div class="label">{label}</div>
-            <div class="value {classe}">{value}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    card(c1, "Total Contábil", fmt_brl(res['total_contabil']))
-    card(c2, "Total Financeiro", fmt_brl(res['total_financeiro']))
-    card(c3, "Diferença Macro", fmt_brl(res['diferenca_macro']))
-    card(c4, "Parceiros com diferença", str(res["qtd_parceiros"]))
-    status_classe = "ok" if "OK" in res["status"] else "divergencia"
-    card(c5, "Validação", res["status"], status_classe)
+        col.markdown(f"""<div class="metric-card"><div class="label">{label}</div>
+        <div class="value {classe}">{value}</div></div>""", unsafe_allow_html=True)
+    card(c1, "Total Contábil", fmt_brl(resumo["total_contabil"]))
+    card(c2, "Total Financeiro", fmt_brl(resumo["total_financeiro"]))
+    card(c3, "Diferença Macro", fmt_brl(resumo["diferenca_macro"]))
+    card(c4, "Parceiros c/ diferença", str(resumo["qtd_parceiros"]))
+    card(c5, "Validação", resumo["status"], "ok" if "OK" in resumo["status"] else "divergencia")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Tabela de diferenças com observações editáveis ────────────────────────
-    st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — ordenados por |Diferença| decrescente</div>', unsafe_allow_html=True)
+    # ── Fantasmas (órfãos) INLINE ─────────────────────────────────────────────
+    orfaos_cli = res["orfaos_cli"]
+    if len(orfaos_cli) > 0:
+        with st.expander(f"👻 Fantasmas a atribuir nesta conta ({len(orfaos_cli)})", expanded=False):
+            st.caption("Lançamentos contábeis sem CODPARC. Atribua um código e clique em aplicar; "
+                       "quem ficar em branco continua fora do cálculo por parceiro.")
+            # sugestão de CODPARC por nome
+            cli_ok = res["cli_ok"]
+            nomes_map = {
+                norm_nome(r["NOMEPARC"]): r["CODPARC"]
+                for _, r in cli_ok.groupby("NOMEPARC")["CODPARC"].first().reset_index().iterrows()
+            }
+            novas = {}
+            for idx, row in orfaos_cli.iterrows():
+                a1, a2, a3, a4 = st.columns([3, 2, 1, 2])
+                a1.write(f"**{row.get('NOMEPARC', '—')}**")
+                a2.write(f"NF {fmt_int(row.get('NUMNOTA'))}")
+                a3.write(fmt_brl(row.get("VLRDESDOB", 0)))
+                sug = nomes_map.get(norm_nome(str(row.get("NOMEPARC", ""))), "")
+                atual = store["atrib"].get(conta, {}).get(idx, "")
+                val = str(int(atual)) if atual else (str(int(sug)) if sug else "")
+                cod = a4.text_input("CODPARC", value=val, key=f"orf_{conta}_{idx}",
+                                    label_visibility="collapsed", placeholder="CODPARC")
+                if cod.strip():
+                    try:
+                        novas[idx] = int(cod.strip())
+                    except ValueError:
+                        a4.warning("Só números")
+            if st.button("✅ Aplicar atribuições", key=f"aplicar_orf_{conta}"):
+                store["atrib"][conta] = novas
+                recomputa_conta(conta)
+                st.rerun()
+
+    # ── Tabela de diferenças ──────────────────────────────────────────────────
+    st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — |Diferença| decrescente</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Cabeçalho via colunas Streamlit
     cab = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 1.4, 2])
-    labels_cab = ["#", "CODPARC", "Parceiro", "Qtd NFs Cont.", "Qtd NFs Fin.",
-                  "Soma Contábil", "Soma Financeiro", "Diferença", "Status", "📝 Observação do Analista"]
+    labels_cab = ["#", "CODPARC", "Parceiro", "Qtd Cont.", "Qtd Fin.",
+                  "Soma Contábil", "Soma Financeiro", "Diferença", "Status", "📝 Observação"]
     for col, lbl in zip(cab, labels_cab):
         col.markdown(f"<div style='background:#041747;color:#FAC318;font-weight:700;font-size:11px;padding:6px 4px;text-align:center'>{lbl}</div>", unsafe_allow_html=True)
 
@@ -546,17 +307,10 @@ elif st.session_state.etapa == "processar":
         dif = row["DIFERENCA"]
         cor_dif = "#C00000" if dif > 0 else "#0071FE"
         status = row["STATUS"]
-        if "Contábil" in status:
-            cor_st, bg_st = "#C00000", "#FFE6E6"
-        elif "Financeiro" in status:
-            cor_st, bg_st = "#C00000", "#FFE6E6"
-        else:
-            cor_st, bg_st = "#041747", "#FFF4CC"
+        cor_st, bg_st = ("#C00000", "#FFE6E6") if ("Contábil" in status or "Financeiro" in status) else ("#041747", "#FFF4CC")
         bg = "#FFFFFF" if i % 2 == 1 else "#F5F7FA"
         borda = "border-bottom:1px solid #D9D9D9;"
-
         c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([0.3, 0.9, 2, 0.6, 0.6, 1.1, 1.1, 1, 1.4, 2])
-
         cel = f"background:{bg};{borda}padding:6px 4px;font-size:12px;"
         c0.markdown(f"<div style='{cel}text-align:center;color:#595959'>{i}</div>", unsafe_allow_html=True)
         c1.markdown(f"<div style='{cel}text-align:center'>{codparc}</div>", unsafe_allow_html=True)
@@ -567,144 +321,79 @@ elif st.session_state.etapa == "processar":
         c6.markdown(f"<div style='{cel}text-align:right'>{fmt_brl(row['SOMA_FIN'])}</div>", unsafe_allow_html=True)
         c7.markdown(f"<div style='{cel}text-align:right;color:{cor_dif};font-weight:700'>{fmt_brl(dif)}</div>", unsafe_allow_html=True)
         c8.markdown(f"<div style='background:{bg_st};{borda}padding:6px 4px;font-size:11px;text-align:center;color:{cor_st};font-weight:700'>{status}</div>", unsafe_allow_html=True)
-
-        obs_atual = st.session_state.observacoes.get(codparc, "")
-        nova_obs = c9.text_input(
-            label="obs",
-            value=obs_atual,
-            key=f"obs_{codparc}",
-            label_visibility="collapsed",
-            placeholder="Digite a observação...",
-        )
+        obs_atual = obs_conta.get(codparc, "")
+        nova_obs = c9.text_input("obs", value=obs_atual, key=f"obs_{conta}_{codparc}",
+                                 label_visibility="collapsed", placeholder="Observação...")
         if nova_obs != obs_atual:
-            st.session_state.observacoes[codparc] = nova_obs
-            salvar_observacoes(st.session_state.observacoes)
+            obs_conta[codparc] = nova_obs
 
     st.markdown("<div style='border-bottom:2px solid #041747;margin-bottom:16px'></div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Drill-down interativo ──────────────────────────────────────────────────
+    # ── Drill-down ────────────────────────────────────────────────────────────
     st.markdown('<div class="secao-titulo">🔎 Drill-Down por Parceiro</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    opcoes = [
-        f"{int(row['CODPARC'])} — {row['NOMEPARC']}"
-        for _, row in df_divergentes.iterrows()
-    ]
+    if len(df_divergentes) > 0:
+        opcoes = [f"{int(r['CODPARC'])} — {r['NOMEPARC']}" for _, r in df_divergentes.iterrows()]
+        selecao = st.selectbox("Selecione o parceiro:", options=opcoes, index=0, key=f"drill_{conta}")
+        if selecao:
+            cod_sel = int(selecao.split(" — ")[0])
+            nfs_cli, nfs_fin, resumo_nf = drill_down(cod_sel, res["cli_ok"], res["fin_ok"])
+            rp = df_divergentes[df_divergentes["CODPARC"] == cod_sel].iloc[0]
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Soma Contábil", fmt_brl(rp["SOMA_CLI"]))
+            d2.metric("Soma Financeiro", fmt_brl(rp["SOMA_FIN"]))
+            d3.metric("Diferença", fmt_brl(rp["DIFERENCA"]))
+            d4.metric("Status", rp["STATUS"])
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("**📋 Resumo por Nota Fiscal**")
 
-    selecao = st.selectbox(
-        "Selecione o parceiro para investigar:",
-        options=opcoes,
-        index=0,
-        key="drill_select",
-    )
+            def colorir(val):
+                mapa = {
+                    "OK": "background-color:#D9F2DC;color:#0F8C3B;",
+                    "Diverge": "background-color:#FFF4CC;color:#041747;font-weight:bold;",
+                    "Só Contábil": "background-color:#FFE6E6;color:#C00000;",
+                    "Só Financeiro": "background-color:#FFE6E6;color:#C00000;",
+                    "Compensa internamente": "background-color:#F2F2F2;color:#595959;",
+                }
+                return mapa.get(val, "")
 
-    if selecao:
-        codparc_selecionado = int(selecao.split(" — ")[0])
-        nome_selecionado = selecao.split(" — ")[1]
+            styled = (resumo_nf[["NF", "Σ_Contábil", "Σ_Financeiro", "Δ", "Status"]].style
+                      .map(colorir, subset=["Status"])
+                      .format({"NF": fmt_nf, "Σ_Contábil": fmt_brl, "Σ_Financeiro": fmt_brl, "Δ": fmt_brl})
+                      .set_properties(**{"font-family": "Calibri, sans-serif", "font-size": "12px"}))
+            st.dataframe(styled, use_container_width=True, height=280)
 
-        nfs_cli, nfs_fin, resumo_nf = drill_down(
-            codparc_selecionado,
-            st.session_state.df_cli_ok,
-            st.session_state.df_fin_ok,
-        )
-
-        # Mini resumo do parceiro
-        row_parceiro = df_divergentes[df_divergentes["CODPARC"] == codparc_selecionado].iloc[0]
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Soma Contábil", fmt_brl(row_parceiro['SOMA_CLI']))
-        col_b.metric("Soma Financeiro", fmt_brl(row_parceiro['SOMA_FIN']))
-        col_c.metric("Diferença", fmt_brl(row_parceiro['DIFERENCA']))
-        col_d.metric("Status", row_parceiro["STATUS"])
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Tabela resumo por NF com status
-        st.markdown("**📋 Resumo por Nota Fiscal**")
-
-        def colorir_status_nf(val):
-            mapa = {
-                "OK": "background-color: #D9F2DC; color: #0F8C3B;",
-                "Diverge": "background-color: #FFF4CC; color: #041747; font-weight: bold;",
-                "Só Contábil": "background-color: #FFE6E6; color: #C00000;",
-                "Só Financeiro": "background-color: #FFE6E6; color: #C00000;",
-                "Compensa internamente": "background-color: #F2F2F2; color: #595959;",
-            }
-            return mapa.get(val, "")
-
-        styled_nf = (
-            resumo_nf[["NF", "Σ_Contábil", "Σ_Financeiro", "Δ", "Status"]]
-            .style
-            .map(colorir_status_nf, subset=["Status"])
-            .format({
-                "NF": fmt_nf,
-                "Σ_Contábil": fmt_brl,
-                "Σ_Financeiro": fmt_brl,
-                "Δ": fmt_brl,
-            })
-            .set_properties(**{"font-family": "Calibri, sans-serif", "font-size": "12px"})
-        )
-        st.dataframe(styled_nf, use_container_width=True, height=280)
-
-        # NFs lado a lado
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_cli, col_fin = st.columns(2)
-
-        with col_cli:
-            st.markdown(
-                f'<div style="background:#0071FE;color:white;padding:6px 12px;border-radius:4px;font-weight:700;font-size:13px;">📋 NFs CONTÁBIL ({len(nfs_cli)} lançamentos)</div>',
-                unsafe_allow_html=True
-            )
-            if len(nfs_cli) > 0:
-                st.dataframe(
-                    nfs_cli.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}),
-                    use_container_width=True,
-                    height=250,
-                )
-            else:
-                st.info("Nenhum lançamento contábil para este parceiro.")
-
-        with col_fin:
-            st.markdown(
-                f'<div style="background:#0F8C3B;color:white;padding:6px 12px;border-radius:4px;font-weight:700;font-size:13px;">📋 NFs FINANCEIRO ({len(nfs_fin)} lançamentos)</div>',
-                unsafe_allow_html=True
-            )
-            if len(nfs_fin) > 0:
-                st.dataframe(
-                    nfs_fin.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}),
-                    use_container_width=True,
-                    height=250,
-                )
-            else:
-                st.info("Nenhum lançamento financeiro para este parceiro.")
+            st.markdown("<br>", unsafe_allow_html=True)
+            cc, cf = st.columns(2)
+            with cc:
+                st.markdown(f'<div style="background:#0071FE;color:white;padding:6px 12px;border-radius:4px;font-weight:700;font-size:13px;">📋 NFs CONTÁBIL ({len(nfs_cli)})</div>', unsafe_allow_html=True)
+                if len(nfs_cli) > 0:
+                    st.dataframe(nfs_cli.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}), use_container_width=True, height=250)
+                else:
+                    st.info("Sem lançamentos contábeis.")
+            with cf:
+                st.markdown(f'<div style="background:#0F8C3B;color:white;padding:6px 12px;border-radius:4px;font-weight:700;font-size:13px;">📋 NFs FINANCEIRO ({len(nfs_fin)})</div>', unsafe_allow_html=True)
+                if len(nfs_fin) > 0:
+                    st.dataframe(nfs_fin.style.format({"NF": fmt_nf, "Valor (R$)": fmt_brl}), use_container_width=True, height=250)
+                else:
+                    st.info("Sem lançamentos financeiros.")
+    else:
+        st.success("Nenhum parceiro com diferença nesta conta. ✅")
 
     st.markdown("<br><hr>", unsafe_allow_html=True)
 
-    # ── Download e ações ───────────────────────────────────────────────────────
-    col_dl, col_reiniciar = st.columns([2, 1])
-
-    with col_dl:
-        with st.spinner("Preparando Excel..."):
-            excel_bytes = gerar_excel(
-                st.session_state.df_fin_filtrado,
-                df_divergentes,
-                res,
-                st.session_state.orfaos_cli,
-                st.session_state.orfaos_fin,
-                st.session_state.observacoes,
-            )
-        st.download_button(
-            label="⬇️ Baixar resultado em Excel",
-            data=excel_bytes,
-            file_name="conciliacao_clientes_LLE.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+    # ── Download Excel da conta ───────────────────────────────────────────────
+    with st.spinner("Preparando Excel..."):
+        excel_bytes = gerar_excel(
+            res["fin_ok"], df_divergentes, resumo,
+            res["orfaos_cli"], res["orfaos_fin"], obs_conta,
         )
-
-    with col_reiniciar:
-        if st.button("🔄 Nova conciliação", use_container_width=True):
-            limpar_observacoes()
-            for key in ["etapa", "df_cli_ok", "df_fin_ok", "orfaos_cli", "orfaos_fin",
-                        "df_fin_filtrado", "df_cli_raw", "resultado", "resumo", "observacoes"]:
-                st.session_state.pop(key, None)
-            st.rerun()
+    st.download_button(
+        label=f"⬇️ Baixar Excel — {receita['nome']}",
+        data=excel_bytes,
+        file_name=f"conciliacao_{conta}_LLE.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
