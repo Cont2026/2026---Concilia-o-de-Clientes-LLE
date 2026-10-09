@@ -455,7 +455,11 @@ def drill_down(codparc: int, df_cli: pd.DataFrame, df_fin: pd.DataFrame):
 # ── Export Excel ──────────────────────────────────────────────────────────────
 
 def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, observacoes=None) -> bytes:
-    """Gera Excel com abas: Investigação Diferença e Compensações entre Parceiros."""
+    """Gera Excel com a aba Investigação Diferença.
+
+    As compensações entre parceiros passaram a ser exibidas na tela do app
+    (bloco "🔁 Compensações"); por isso não vão mais para o Excel.
+    """
     import io
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -580,73 +584,8 @@ def gerar_excel(df_filtrado, df_divergentes, resumo, orfaos_cli, orfaos_fin, obs
             ws2.cell(row=linha_orf, column=5, value=row_data.get("DTEMISSAO", ""))
             linha_orf += 1
 
-    # ── Aba 2: Compensações entre Parceiros ──────────────────────────────────
-    ws3 = wb.create_sheet("Compensações entre Parceiros")
-    df_comp = detectar_compensacoes(df_divergentes)
-
-    ws3["A1"] = "COMPENSAÇÕES ENTRE PARCEIROS — pares com diferença igual e oposta"
-    ws3["A1"].font = Font(bold=True, color=BRANCO, size=14, name="Calibri")
-    ws3["A1"].fill = PatternFill("solid", fgColor=AZUL_ESCURO)
-    ws3.merge_cells("A1:I1")
-    ws3["A1"].alignment = Alignment(horizontal="center")
-
-    ws3["A3"] = (
-        "Sugestão para conferência: o vínculo é apenas o VALOR líquido (não a nota fiscal). "
-        "Um parceiro com sobra (+) e outro com falta (−) do mesmo valor podem indicar "
-        "lançamento trocado entre eles. Confirme antes de considerar resolvido."
-    )
-    ws3["A3"].font = Font(italic=True, color="595959", name="Calibri", size=10)
-    ws3["A3"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws3.merge_cells("A3:I4")
-
-    cab_comp = [
-        "Valor Compensado (R$)",
-        "CODPARC (−)", "Parceiro com falta (−)", "Diferença (−)",
-        "CODPARC (+)", "Parceiro com sobra (+)", "Diferença (+)",
-        "Tipo", "Observação",
-    ]
-    for col_i, nome in enumerate(cab_comp, start=1):
-        cell = ws3.cell(row=6, column=col_i, value=nome)
-        header_style(cell)
-        borda_fina(cell)
-
-    if df_comp is None or len(df_comp) == 0:
-        cell = ws3.cell(
-            row=7, column=1,
-            value="Nenhuma compensação encontrada (nenhum par de diferenças opostas acima do valor mínimo).",
-        )
-        cell.font = Font(italic=True, color="595959", name="Calibri", size=10)
-        ws3.merge_cells("A7:I7")
-    else:
-        for row_i, (_, rc) in enumerate(df_comp.iterrows(), start=7):
-            vals = [
-                rc["VALOR"],
-                rc["CODPARC_A"], rc["PARCEIRO_A"], rc["DIF_A"],
-                rc["CODPARC_B"], rc["PARCEIRO_B"], rc["DIF_B"],
-                rc["TIPO"], rc["OBSERVACAO"],
-            ]
-            for col_i, val in enumerate(vals, start=1):
-                cell = ws3.cell(row=row_i, column=col_i, value=val)
-                cell.font = Font(name="Calibri", size=10)
-                fill_cor = BRANCO if (row_i - 7) % 2 == 0 else CINZA
-                cell.fill = PatternFill("solid", fgColor=fill_cor)
-                borda_fina(cell)
-                if col_i in (1, 4, 7):  # Valor, Diferença (−), Diferença (+)
-                    cell.number_format = '#,##0.00'
-
-            # Cor do tipo
-            tipo_cell = ws3.cell(row=row_i, column=8)
-            if "Ambíguo" in str(rc["TIPO"]):
-                tipo_cell.fill = PatternFill("solid", fgColor="FFF4CC")
-                tipo_cell.font = Font(bold=True, color=AZUL_ESCURO, name="Calibri", size=10)
-            else:
-                tipo_cell.fill = PatternFill("solid", fgColor="D9F2DC")
-                tipo_cell.font = Font(bold=True, color=VERDE, name="Calibri", size=10)
-
-    ws3.freeze_panes = "A7"
-
-    # Ajuste de largura das colunas (ambas as abas)
-    for ws in [ws2, ws3]:
+    # Ajuste de largura das colunas
+    for ws in [ws2]:
         larguras = {}
         for row in ws.iter_rows():
             for cell in row:
