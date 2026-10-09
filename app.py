@@ -8,6 +8,7 @@ from conciliacao import (
     ler_contabil,
     ler_financeiro,
     conciliar_conta,
+    detectar_compensacoes,
     drill_down,
     gerar_excel,
 )
@@ -333,6 +334,33 @@ else:
                 banco.salvar_atrib(mk, conta, novas)
                 recomputa_conta(conta)
                 st.rerun()
+
+    # ── Compensações entre parceiros INLINE (só aparece se houver) ────────────
+    df_comp = detectar_compensacoes(df_divergentes)
+    if len(df_comp) > 0:
+        with st.expander(f"🔁 Compensações ({len(df_comp)})", expanded=False):
+            st.caption("Pares com diferença igual e oposta — possível lançamento trocado entre os "
+                       "dois parceiros. É sugestão pelo valor (não pela nota fiscal); confirme antes "
+                       "de considerar resolvido.")
+            larguras_comp = [1.1, 0.9, 2, 1, 0.9, 2, 1, 1.4]
+            hc = st.columns(larguras_comp)
+            for col, lbl in zip(hc, ["Valor", "CODPARC (−)", "Parceiro (falta −)", "Dif. (−)",
+                                     "CODPARC (+)", "Parceiro (sobra +)", "Dif. (+)", "Tipo"]):
+                col.markdown(f"<div style='background:#041747;color:#FAC318;font-weight:700;font-size:11px;padding:6px 4px;text-align:center'>{lbl}</div>", unsafe_allow_html=True)
+            for j, (_, rc) in enumerate(df_comp.iterrows(), start=1):
+                bgc = "#FFFFFF" if j % 2 == 1 else "#F5F7FA"
+                amb = "Ambíguo" in str(rc["TIPO"])
+                cor_tipo, bg_tipo = ("#041747", "#FFF4CC") if amb else ("#0F8C3B", "#D9F2DC")
+                celc = f"background:{bgc};border-bottom:1px solid #D9D9D9;padding:6px 4px;font-size:12px;"
+                k0, k1, k2, k3, k4, k5, k6, k7 = st.columns(larguras_comp)
+                k0.markdown(f"<div style='{celc}text-align:right;font-weight:700'>{fmt_brl(rc['VALOR'])}</div>", unsafe_allow_html=True)
+                k1.markdown(f"<div style='{celc}text-align:center'>{int(rc['CODPARC_A'])}</div>", unsafe_allow_html=True)
+                k2.markdown(f"<div style='{celc}font-weight:600'>{rc['PARCEIRO_A']}</div>", unsafe_allow_html=True)
+                k3.markdown(f"<div style='{celc}text-align:right;color:#0071FE'>{fmt_brl(rc['DIF_A'])}</div>", unsafe_allow_html=True)
+                k4.markdown(f"<div style='{celc}text-align:center'>{int(rc['CODPARC_B'])}</div>", unsafe_allow_html=True)
+                k5.markdown(f"<div style='{celc}font-weight:600'>{rc['PARCEIRO_B']}</div>", unsafe_allow_html=True)
+                k6.markdown(f"<div style='{celc}text-align:right;color:#C00000'>{fmt_brl(rc['DIF_B'])}</div>", unsafe_allow_html=True)
+                k7.markdown(f"<div style='background:{bg_tipo};border-bottom:1px solid #D9D9D9;padding:6px 4px;font-size:11px;text-align:center;color:{cor_tipo};font-weight:700'>{rc['TIPO']}</div>", unsafe_allow_html=True)
 
     # ── Tabela de diferenças ──────────────────────────────────────────────────
     st.markdown('<div class="secao-titulo">🔍 Parceiros com Diferença — |Diferença| decrescente</div>', unsafe_allow_html=True)
